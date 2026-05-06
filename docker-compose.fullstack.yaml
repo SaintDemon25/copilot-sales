@@ -1,0 +1,55 @@
+services:
+  # ── DialogScribe backend ──────────────────────────────────────────────────
+  dialogscribe:
+    build:
+      context: ../DialogScribe
+      dockerfile: Dockerfile.dev
+    container_name: dialogscribe-dev
+    environment:
+      - MISTRAL_API_KEY=REDACTED_KEY
+      - ASR_URL=https://api.mistral.ai
+      - ASR_MODEL=voxtral-mini-latest
+      - LLM_API_KEY=REDACTED_KEY
+      - LLM_BASE_URL=https://api.mistral.ai/v1
+      - LLM_MODEL=mistral-small-latest
+      - JWT_SECRET=dev-secret-change-in-prod
+      - API_KEY=
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/dialogscribe.db
+      - HOST=0.0.0.0
+      - PORT=7860
+      - MAX_UPLOAD_SIZE_MB=500
+      - ADMIN_EMAIL=admin@local.dev
+      - ADMIN_PASSWORD=admin123
+      - FRONTEND_URL=http://localhost:5173
+    volumes:
+      - dialogscribe_data:/app/data
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── CoPilot Sales frontend (nginx) ────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: copilot-sales
+    ports:
+      - "5173:80"
+    networks:
+      - app-net
+    depends_on:
+      dialogscribe:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  app-net:
+    driver: bridge
+
+volumes:
+  dialogscribe_data:

@@ -1,40 +1,88 @@
 /**
  * DialogScribe API client
- * Docs: https://github.com/Timik232/DialogScribe
  */
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 const API_KEY  = import.meta.env.VITE_API_KEY ?? ''
+const DS_EMAIL = import.meta.env.VITE_DS_EMAIL ?? 'admin@local.dev'
+const DS_PASS  = import.meta.env.VITE_DS_PASSWORD ?? 'admin123'
 
-function headers(extra = {}) {
-  const h = { 'Accept': 'application/json', ...extra }
-  if (API_KEY) h['Authorization'] = `Bearer ${API_KEY}`
-  return h
+// ---------------------------------------------------------------------------
+// Auth — auto-login with token cache + 401 retry
+// ---------------------------------------------------------------------------
+
+let _token = ''
+let _loginPromise = null
+
+async function ensureToken() {
+  if (_token) return
+  if (_loginPromise) { await _loginPromise; return }
+
+  _loginPromise = (async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/api/auth/login`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body:    JSON.stringify({ login: DS_EMAIL, password: DS_PASS }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        _token = data.access_token
+      }
+    } catch {
+      // network error — leave _token empty, calls will fail with real error
+    } finally {
+      _loginPromise = null
+    }
+  })()
+
+  return _loginPromise
 }
 
-/** Generic fetch wrapper — throws on non-2xx */
+function authHeader() {
+  if (_token)   return { Authorization: `Bearer ${_token}` }
+  if (API_KEY)  return { Authorization: `Bearer ${API_KEY}` }
+  return {}
+}
+
 async function apiFetch(path, options = {}) {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...options,
-    headers: { ...headers(), ...options.headers },
+  await ensureToken()
+
+  const makeHeaders = () => ({
+    Accept: 'application/json',
+    ...authHeader(),
+    ...options.headers,
   })
+
+  const doFetch = (hdrs) =>
+    fetch(`${BASE_URL}${path}`, { ...options, headers: hdrs })
+
+  let res = await doFetch(makeHeaders())
+
+  // Token expired — re-login and retry once
+  if (res.status === 401) {
+    _token = ''
+    await ensureToken()
+    res = await doFetch(makeHeaders())
+  }
+
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
     throw new Error(`API ${path} → ${res.status}: ${text}`)
   }
-  const contentType = res.headers.get('content-type') ?? ''
-  return contentType.includes('application/json') ? res.json() : res.text()
+
+  const ct = res.headers.get('content-type') ?? ''
+  return ct.includes('application/json') ? res.json() : res.text()
 }
 
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
 
-/** Check if the backend is reachable */
 export async function checkHealth() {
   try {
-    await apiFetch('/health')
-    return true
+    const res = await fetch(`${BASE_URL}/health`)
+    return res.ok
   } catch {
     return false
   }
@@ -44,16 +92,10 @@ export async function checkHealth() {
 // Models
 // ---------------------------------------------------------------------------
 
-/**
- * GET /api/models
- * Returns list of available LLM model names.
- * @returns {Promise<string[]>}
- */
 export async function getModels() {
   const data = await apiFetch('/api/models')
-  // Normalise: could be string[] or {models: string[]} depending on version
-  if (Array.isArray(data)) return data
-  if (data?.models) return data.models
+  if (Array.isArray(data))   return data
+  if (data?.models)          return data.models.map(m => m.id ?? m)
   return []
 }
 
@@ -63,36 +105,27 @@ export async function getModels() {
 
 /**
  * POST /api/transcribe
- * Upload an audio/video file for transcription with speaker diarization.
- *
- * @param {File} file        - Audio or video file
- * @param {object} opts
- * @param {string} [opts.language]       - Language hint, e.g. "ru"
- * @param {boolean} [opts.diarize=true]  - Enable speaker diarization
- * @param {(pct: number) => void} [opts.onProgress]
- * @returns {Promise<TranscriptResult>}
+ * @param {File} file
+ * @param {{ language?: string, diarize?: boolean }} opts
  */
 export async function transcribeFile(file, opts = {}) {
   const fd = new FormData()
   fd.append('file', file)
-  if (opts.language)          fd.append('language', opts.language)
-  if (opts.diarize !== false) fd.append('diarize', 'true')
+  if (opts.language) fd.append('language', opts.language)
+  // diarization_mode values: none | simple (hybrid) | advanced (pyannote)
+  fd.append('diarization_mode', opts.diarize !== false ? 'simple' : 'none')
 
+  // No Content-Type — browser sets multipart boundary automatically
   const data = await apiFetch('/api/transcribe', {
-    method: 'POST',
-    headers: headers(), // no Content-Type — browser sets multipart boundary
-    body: fd,
+    method:  'POST',
+    headers: { Accept: 'application/json', ...authHeader() },
+    body:    fd,
   })
   return normaliseTranscript(data)
 }
 
 /**
- * POST /v1/audio/transcriptions  (OpenAI-compatible endpoint)
- * Simpler form, returns {text: string}.
- *
- * @param {File} file
- * @param {string} [language]
- * @returns {Promise<{text: string}>}
+ * POST /v1/audio/transcriptions  (OpenAI-compatible, no JWT required)
  */
 export async function transcribeOpenAI(file, language = 'ru') {
   const fd = new FormData()
@@ -100,15 +133,10 @@ export async function transcribeOpenAI(file, language = 'ru') {
   fd.append('model', 'voxtral')
   fd.append('language', language)
 
-  return apiFetch('/v1/audio/transcriptions', {
-    method: 'POST',
-    body: fd,
-  })
+  return apiFetch('/v1/audio/transcriptions', { method: 'POST', body: fd })
 }
 
-/** Normalise transcript response into a consistent shape */
 function normaliseTranscript(raw) {
-  // Handle both {text, segments, speakers} and flat {transcript}
   return {
     text:     raw.text ?? raw.transcript ?? '',
     segments: raw.segments ?? [],
@@ -124,40 +152,33 @@ function normaliseTranscript(raw) {
 
 /**
  * POST /api/summary
- * Generate a structured meeting summary from transcript text.
- *
- * @param {string} transcript
- * @param {object} [opts]
- * @param {string} [opts.model]   - Override default LLM model
- * @param {string} [opts.prompt]  - Custom summary prompt
- * @returns {Promise<{summary: string, action_items?: string[], decisions?: string[]}>}
+ * Returns { summary, summary_markdown, summary_html }
  */
 export async function getSummary(transcript, opts = {}) {
-  return apiFetch('/api/summary', {
-    method: 'POST',
+  const data = await apiFetch('/api/summary', {
+    method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    body:    JSON.stringify({
       text: transcript,
-      ...(opts.model  ? { model:  opts.model  } : {}),
-      ...(opts.prompt ? { prompt: opts.prompt } : {}),
+      ...(opts.model        ? { model:        opts.model        } : {}),
+      ...(opts.template_key ? { template_key: opts.template_key } : {}),
     }),
   })
+  // Backend returns { summary_markdown, summary_html } — normalise to { summary }
+  return {
+    ...data,
+    summary: data?.summary_markdown ?? data?.summary ?? String(data),
+  }
 }
 
 /**
  * POST /api/insights
- * Extract key insights, decisions and action items from transcript.
- *
- * @param {string} transcript
- * @param {object} [opts]
- * @param {string} [opts.model]
- * @returns {Promise<{insights: string[], action_items: string[], decisions: string[]}>}
  */
 export async function getInsights(transcript, opts = {}) {
   return apiFetch('/api/insights', {
-    method: 'POST',
+    method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    body:    JSON.stringify({
       text: transcript,
       ...(opts.model ? { model: opts.model } : {}),
     }),
@@ -166,16 +187,12 @@ export async function getInsights(transcript, opts = {}) {
 
 /**
  * POST /api/mindmap
- * Generate a mind-map structure from transcript.
- *
- * @param {string} transcript
- * @returns {Promise<{mindmap: string}>}
  */
 export async function getMindmap(transcript) {
   return apiFetch('/api/mindmap', {
-    method: 'POST',
+    method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: transcript }),
+    body:    JSON.stringify({ text: transcript }),
   })
 }
 
@@ -185,53 +202,48 @@ export async function getMindmap(transcript) {
 
 /**
  * POST /api/chat
- * Send a dialog fragment + context and receive an AI coaching tip.
- * Used by Live Advisor Agent for real-time advice.
+ * DialogScribe expects: { text, messages: [{role, content}] }
+ * Returns: { answer }
  *
- * @param {object} params
- * @param {string} params.message       - Latest transcript fragment / question
- * @param {string} [params.context]     - Full transcript so far
- * @param {string} [params.system]      - System prompt override
- * @param {string} [params.model]       - Model override
- * @param {Array}  [params.history]     - Prior chat turns [{role, content}]
- * @returns {Promise<{response: string, role: string}>}
+ * @param {{ message: string, context?: string, system?: string, model?: string, history?: Array }} params
+ * @returns {Promise<{ response: string }>}
  */
 export async function chat(params) {
-  return apiFetch('/api/chat', {
-    method: 'POST',
+  const messages = []
+  messages.push({ role: 'system', content: params.system ?? LIVE_ADVISOR_SYSTEM_PROMPT })
+  if (params.history?.length) messages.push(...params.history)
+  messages.push({ role: 'user', content: params.message })
+
+  const data = await apiFetch('/api/chat', {
+    method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      message:  params.message,
-      context:  params.context  ?? '',
-      system:   params.system   ?? LIVE_ADVISOR_SYSTEM_PROMPT,
-      model:    params.model    ?? undefined,
-      history:  params.history  ?? [],
+    body:    JSON.stringify({
+      text:     params.context ?? '',
+      messages,
+      ...(params.model ? { model: params.model } : {}),
     }),
   })
+
+  // Backend returns { answer } — normalise to { response }
+  return {
+    response: data?.answer ?? data?.response ?? data?.content ?? String(data),
+  }
 }
 
-// System prompt for Live Advisor — matches the architecture doc
 const LIVE_ADVISOR_SYSTEM_PROMPT = `Ты — ассистент менеджера B2B-продаж в реальном времени.
 Твоя задача — давать краткие, конкретные советы на основе фрагментов диалога с клиентом.
 Отвечай на русском. Максимум 3 предложения. Будь конкретен — ссылайся на слова клиента.
 Если фрагмент нейтральный и не требует совета, ответь "—".`
 
 // ---------------------------------------------------------------------------
-// Export helpers
+// Export
 // ---------------------------------------------------------------------------
 
-/**
- * Download transcript in a specific format.
- * GET /api/export?format=docx&text=...  (or POST, depends on server version)
- *
- * @param {string} transcript
- * @param {'txt'|'json'|'srt'|'vtt'|'docx'} format
- */
 export async function exportTranscript(transcript, format = 'docx') {
   const res = await fetch(`${BASE_URL}/api/export`, {
-    method: 'POST',
-    headers: { ...headers(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: transcript, format }),
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...authHeader() },
+    body:    JSON.stringify({ text: transcript, format }),
   })
   if (!res.ok) throw new Error(`Export failed: ${res.status}`)
   const blob = await res.blob()
