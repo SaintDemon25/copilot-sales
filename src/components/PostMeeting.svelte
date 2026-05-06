@@ -4,6 +4,8 @@
 
   const dispatch = createEventDispatcher()
   export let meeting
+  export let liveTranscript = ''
+  export let liveDuration = 0
 
   // ---- State machine ----
   // idle → uploading → transcribing → analyzing → done | error
@@ -22,8 +24,12 @@
   let uploadedFile = null
   let uploadedFileName = ''
 
-  // ---- Demo mode: if no file selected, use mock data after 3s ----
-  let demoMode = false
+  // ---- Source tracking ----
+  // 'live' | 'demo' | 'upload'
+  let source = 'demo'
+
+  // ---- Computed ----
+  $: hasLiveTranscript = liveTranscript && liveTranscript.trim().length > 0
 
   function handleFileChange(e) {
     uploadedFile = e.target.files[0] ?? null
@@ -33,15 +39,15 @@
   async function startProcessing() {
     if (!uploadedFile) {
       // Fall back to demo mode
-      demoMode = true
+      source = 'demo'
       runDemo()
       return
     }
-    demoMode = false
+    source = 'upload'
     await runReal()
   }
 
-  // ---- Real pipeline ----
+  // ---- Real pipeline (file upload) ----
   async function runReal() {
     try {
       phase = 'transcribing'
@@ -49,7 +55,30 @@
       transcript = result.text
 
       phase = 'analyzing'
-      // Fire summary + insights in parallel
+      const [summaryData, insightsData] = await Promise.all([
+        getSummary(transcript),
+        getInsights(transcript),
+      ])
+
+      summaryText = summaryData?.summary ?? summaryData?.text ?? String(summaryData)
+      actionItems = normaliseActionItems(insightsData?.action_items ?? summaryData?.action_items ?? [])
+      decisions   = insightsData?.decisions ?? summaryData?.decisions ?? []
+      insights    = insightsData?.insights  ?? []
+
+      phase = 'done'
+    } catch (e) {
+      errorMsg = e.message
+      phase = 'error'
+    }
+  }
+
+  // ---- Live transcript pipeline (no file upload needed) ----
+  async function runFromLiveTranscript() {
+    try {
+      source = 'live'
+      phase = 'analyzing'
+      transcript = liveTranscript
+
       const [summaryData, insightsData] = await Promise.all([
         getSummary(transcript),
         getInsights(transcript),
@@ -98,11 +127,31 @@
     })
   }
 
+  function fmtDuration(s) {
+    const m   = Math.floor(s / 60).toString().padStart(2, '0')
+    const sec = (s % 60).toString().padStart(2, '0')
+    return `${m}:${sec}`
+  }
+
+  function resetToIdle() {
+    phase = 'idle'
+    errorMsg = ''
+    transcript = ''
+    summaryText = ''
+    actionItems = []
+    decisions = []
+    insights = []
+    uploadedFile = null
+    uploadedFileName = ''
+    source = 'demo'
+  }
+
   // ---- Export ----
   function exportTxt() {
     const content = [
       `Встреча: ${meeting?.client ?? ''}`,
       `Дата: ${new Date().toLocaleDateString('ru-RU')}`,
+      source === 'live' ? `Длительность: ${fmtDuration(liveDuration)}` : '',
       '',
       '## Транскрипт',
       transcript,
@@ -168,6 +217,25 @@
     transcribing: ['transcribe_file — Mistral Voxtral + pyannote diarization'],
     analyzing:    ['POST /api/summary — GigaChat Max', 'POST /api/insights — GigaChat Max'],
   }
+
+  const sourceLabels = {
+    live: '🟢 Live-транскрипт',
+    demo: '🟡 Demo-режим',
+    upload: '🟢 DialogScribe API',
+  }
+
+  const sourceBadge = {
+    live: 'Live',
+    demo: 'Demo',
+    upload: 'Mistral Voxtral',
+  }
+
+  // ---- Auto-start from live transcript ----
+  onMount(() => {
+    if (hasLiveTranscript) {
+      runFromLiveTranscript()
+    }
+  })
 </script>
 
 <div class="post-layout">
@@ -182,8 +250,8 @@
     {/if}
   </div>
 
-  <!-- Upload / Start panel -->
-  {#if phase === 'idle'}
+  <!-- Upload / Start panel (only when no live transcript) -->
+  {#if phase === 'idle' && !hasLiveTranscript}
     <div class="upload-panel">
       <div class="upload-icon">🎙️</div>
       <h3>Загрузите запись встречи</h3>
@@ -215,6 +283,13 @@
       {/if}
     </div>
 
+  <!-- Live transcript auto-processing (onMount triggers this, but guard just in case) -->
+  {:else if phase === 'idle' && hasLiveTranscript}
+    <div class="processing-state">
+      <div class="proc-spinner"></div>
+      <p class="proc-phase">Подготавливаю транскрипт звонка...</p>
+    </div>
+
   <!-- Processing -->
   {:else if phase !== 'done' && phase !== 'error'}
     <div class="processing-state">
@@ -222,10 +297,17 @@
       <p class="proc-phase">{phaseLabel[phase]}</p>
 
       <div class="proc-steps">
-        <div class="proc-step" class:active={phase === 'transcribing'} class:done={phase === 'analyzing' || phase === 'done'}>
-          <span class="step-icon">{phase === 'analyzing' || phase === 'done' ? '✓' : phase === 'transcribing' ? '⟳' : '·'}</span>
-          transcribe_file — транскрипция{demoMode ? ' (demo)' : ' · Mistral Voxtral'}
-        </div>
+        {#if source === 'live'}
+          <div class="proc-step done">
+            <span class="step-icon">✓</span>
+            Транскрипт получен из live-сессии ({liveTranscript.split('\n').filter(l => l.trim()).length} реплик, {fmtDuration(liveDuration)})
+          </div>
+        {:else}
+          <div class="proc-step" class:active={phase === 'transcribing'} class:done={phase === 'analyzing' || phase === 'done'}>
+            <span class="step-icon">{phase === 'analyzing' || phase === 'done' ? '✓' : phase === 'transcribing' ? '⟳' : '·'}</span>
+            transcribe_file — транскрипция{source === 'demo' ? ' (demo)' : ' · Mistral Voxtral'}
+          </div>
+        {/if}
         <div class="proc-step" class:active={phase === 'analyzing'}>
           <span class="step-icon">{phase === 'analyzing' ? '⟳' : '·'}</span>
           Параллельно: /api/summary · /api/insights
@@ -243,12 +325,18 @@
       <div class="error-icon">⚠️</div>
       <p class="error-msg">{errorMsg}</p>
       <div class="error-actions">
-        <button class="btn btn-secondary" on:click={() => { phase = 'idle'; errorMsg = '' }}>
+        <button class="btn btn-secondary" on:click={resetToIdle}>
           ← Попробовать снова
         </button>
-        <button class="btn btn-ghost" on:click={() => { demoMode = true; runDemo() }}>
-          Запустить демо
-        </button>
+        {#if !hasLiveTranscript}
+          <button class="btn btn-ghost" on:click={() => { source = 'demo'; runDemo() }}>
+            Запустить демо
+          </button>
+        {:else}
+          <button class="btn btn-ghost" on:click={runFromLiveTranscript}>
+            Повторить анализ
+          </button>
+        {/if}
       </div>
     </div>
 
@@ -260,7 +348,7 @@
         <div class="card-header">
           <span class="card-icon">📝</span>
           <span class="card-title">Саммари встречи</span>
-          <span class="card-badge">{demoMode ? 'Demo' : 'POST /api/summary'}</span>
+          <span class="card-badge">{sourceBadge[source] ?? 'API'}</span>
         </div>
         <p class="summary-text">{summaryText}</p>
       </div>
@@ -316,7 +404,7 @@
           <summary class="card-header transcript-summary">
             <span class="card-icon">🔤</span>
             <span class="card-title">Транскрипт</span>
-            <span class="card-badge">{demoMode ? 'Demo' : 'Mistral Voxtral'}</span>
+            <span class="card-badge">{sourceBadge[source] ?? 'API'}</span>
           </summary>
           <pre class="transcript-text">{transcript}</pre>
         </details>
@@ -324,11 +412,23 @@
 
       <!-- Metadata -->
       <div class="meta-bar">
-        <span>{demoMode ? '🟡 Demo-режим' : '🟢 DialogScribe API'}</span>
+        <span>{sourceLabels[source] ?? '🟢 API'}</span>
+        {#if source === 'live'}
+          <span>⏱ {fmtDuration(liveDuration)}</span>
+        {/if}
         <span>🗓 {new Date().toLocaleDateString('ru-RU')}</span>
         <span>🔤 {transcript.split(' ').length} слов</span>
         <span>✅ {actionItems.filter(a => a.done).length}/{actionItems.length} задач выполнено</span>
       </div>
+
+      <!-- Manual upload option -->
+      {#if source === 'live'}
+        <div class="meta-bar" style="justify-content: center">
+          <button class="manual-upload-link" on:click={resetToIdle}>
+            📎 Загрузить другую запись вручную
+          </button>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -640,4 +740,17 @@
     border-radius: 10px;
     flex-wrap: wrap;
   }
+
+  .manual-upload-link {
+    background: none;
+    border: none;
+    color: #4b5a7a;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    padding: 0;
+    transition: color 0.15s;
+  }
+  .manual-upload-link:hover { color: #6b7db3 }
 </style>

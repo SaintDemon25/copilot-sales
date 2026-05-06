@@ -150,7 +150,7 @@
     if (mic) { mic.stop(); mic = null }
     if (systemAudio) { systemAudio.stop(); systemAudio = null }
     wsConnected = false
-    dispatch('endMeeting')
+    dispatch('endMeeting', { transcript: transcriptText, displayedLines, elapsed })
   }
 
   onMount(() => {
