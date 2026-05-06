@@ -1,36 +1,33 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte'
-  import { chat } from '../lib/api.js'
+  import { connectLiveHints, createMicRecorder, createSystemAudioRecorder } from '../lib/api.js'
 
   const dispatch = createEventDispatcher()
   export let meeting
 
   // ---- Transcript state ----
   let displayedLines = []
-  let transcriptText = ''   // plain text accumulation for API context
-  let currentIdx = 0
+  let transcriptText = ''   // plain text accumulation for context
   let elapsed = 0
 
   // ---- Advisor state ----
   let advisorCards = []
-  let pendingTip   = false  // waiting for /api/chat response
+  let wsConnected = false
+  let wsConnecting = false
+  let wsError = ''
+  let isRecording = false
+  let mic
+  let systemAudio
+  let hasSystemAudio = false
+
+  // ---- Live connection ----
+  let liveConnection = null
+  let stopped = false
 
   // ---- Timers ----
-  let lineTimer, elapsedTimer
+  let elapsedTimer
 
-  // ---- Simulated transcript feed (mocks AssemblyAI stream) ----
-  const transcriptFeed = [
-    { speaker: 'Менеджер', text: 'Добрый день, Дмитрий! Рады видеть вас снова.' },
-    { speaker: 'Клиент',   text: 'Добрый день. Я изучил ваше предложение по логистическому модулю.' },
-    { speaker: 'Клиент',   text: 'Нас интересует интеграция с нашей текущей 1С. Это реально?' },
-    { speaker: 'Менеджер', text: 'Да, у нас есть готовый коннектор для 1С:ERP. Могу показать?' },
-    { speaker: 'Клиент',   text: 'Покажите. И ещё — сколько это будет стоить? У нас бюджет ограничен.' },
-    { speaker: 'Менеджер', text: 'Стоимость зависит от объёма, давайте обсудим ваши потребности.' },
-    { speaker: 'Клиент',   text: 'Нас смущает SAP — они предложили более низкую цену.' },
-    { speaker: 'Менеджер', text: 'Понимаю. Позвольте показать разницу в совокупной стоимости владения.' },
-  ]
-
-  // Trigger keywords for the fast classifier layer
+  // ---- Trigger keywords for local fast layer ----
   const TRIGGERS = ['цена', 'стоит', 'бюджет', 'возражени', 'конкурент', 'sap', '1с', 'интеграц', 'дорого', 'дешевле']
 
   function detectTrigger(text) {
@@ -42,84 +39,146 @@
     return null
   }
 
-  const typeColors = { question: '#3b82f6', price: '#f59e0b', competitor: '#ef4444', objection: '#a855f7' }
-  const typeLabels = { question: 'Вопрос', price: 'Цена', competitor: 'Конкурент', objection: 'Возражение' }
+  const typeColors = { question: '#3b82f6', price: '#f59e0b', competitor: '#ef4444', objection: '#a855f7', argumentative: '#a855f7', navigational: '#3b82f6', tactical: '#10b981', strategic: '#6366f1', warning: '#ef4444', analytical: '#f59e0b' }
+  const typeLabels = { question: 'Вопрос', price: 'Цена', competitor: 'Конкурент', objection: 'Возражение', argumentative: 'Аргумент', navigational: 'Навигация', tactical: 'Тактика', strategic: 'Стратегия', warning: 'Предупреждение', analytical: 'Аналитика' }
 
-  async function fetchTip(triggerType, line) {
-    if (pendingTip) return  // don't stack requests
-    pendingTip = true
-
-    // Build context: client info + transcript so far
-    const clientCtx = meeting
-      ? `Клиент: ${meeting.client}. Контакт: ${meeting.contact}. Тема: ${meeting.topic}.`
-      : ''
-
-    const prompt = `[Триггер: ${typeLabels[triggerType]}]\nКлиент только что сказал: "${line.text}"\n\nДай краткий совет менеджеру.`
+  async function startLiveSession() {
+    wsConnecting = true
+    wsError = ''
+    stopped = false
 
     try {
-      const result = await chat({
-        message: prompt,
-        context: `${clientCtx}\n\nТранскрипт до этого момента:\n${transcriptText}`,
+      liveConnection = await connectLiveHints({
+        onTranscript(msg) {
+          const speaker = msg.speaker === 'user' ? 'Менеджер' : 'Клиент'
+          const prefix = msg.speaker === 'user' ? '[Вы]:' : '[Оппонент]:'
+          const text = msg.text?.trim()
+          if (!text) return
+
+          displayedLines = [...displayedLines, { speaker, text }]
+          transcriptText += `${prefix} ${text}\n`
+
+          // Local fast layer trigger detection
+          const trigger = detectTrigger(text)
+          if (trigger) {
+            // Add a local trigger indicator card
+            advisorCards = [{
+              type: trigger,
+              title: typeLabels[trigger],
+              advice: `Обнаружен триггер: "${text}". Совет от агента загружается...`,
+              source: 'Fast Layer · Локально',
+              fresh: true,
+              loading: true,
+            }, ...advisorCards].slice(0, 8)
+          }
+        },
+        onHint(msg) {
+          // Replace loading cards or add new hint
+          advisorCards = [{
+            type: msg.hint_type || 'argumentative',
+            title: typeLabels[msg.hint_type] || msg.hint_type || 'Совет',
+            advice: msg.text,
+            source: `Live Advisor · ${msg.priority || 'medium'}`,
+            fresh: true,
+            hintId: msg.hint_id,
+          }, ...advisorCards.filter(c => !c.loading)].slice(0, 8)
+        },
+        onStatus(msg) {
+          if (msg.status === 'ready') {
+            wsConnected = true
+            wsConnecting = false
+          } else if (msg.status === 'processing') {
+            // Server is busy processing previous chunk
+          } else if (msg.status === 'silent_chunk') {
+            // No speech detected in chunk
+          } else if (msg.status === 'disconnected') {
+            wsConnected = false
+          }
+        },
+        onError(msg) {
+          wsError = msg.message || 'WebSocket error'
+          wsConnecting = false
+        },
       })
 
-      const adviceText = result?.response ?? result?.content ?? result?.message ?? String(result)
-      if (adviceText && adviceText !== '—') {
-        advisorCards = [{
-          type:    triggerType,
-          title:   typeLabels[triggerType],
-          advice:  adviceText,
-          source:  'POST /api/chat · DialogScribe',
-          fresh:   true,
-        }, ...advisorCards].slice(0, 5)
+      // Send session config
+      const clientCtx = meeting
+        ? `Клиент: ${meeting.client}. Контакт: ${meeting.contact}. Тема: ${meeting.topic}.`
+        : ''
+      liveConnection.sendConfig('sales', clientCtx)
 
-        // Remove "fresh" flag after animation
-        setTimeout(() => {
-          advisorCards = advisorCards.map((c, i) => i === 0 ? { ...c, fresh: false } : c)
-        }, 600)
-      }
+      wsConnected = true
+      wsConnecting = false
+
+      // Start mic recording — segments are sent automatically via callback
+      mic = createMicRecorder({
+        onSegment(base64Audio) {
+          if (liveConnection && !stopped) {
+            liveConnection.sendAudio(base64Audio, 'mic')
+          }
+        },
+        segmentIntervalMs: 6000,
+      })
+      await mic.start()
+      isRecording = true
+
     } catch (e) {
-      // Fallback: show a chip noting the API error, keep demo flowing
-      advisorCards = [{
-        type:   triggerType,
-        title:  typeLabels[triggerType] + ' (API недоступен)',
-        advice: `Триггер обнаружен: "${line.text}". Подключите DialogScribe для полноценных советов.`,
-        source: 'Fallback (offline)',
-        fresh:  true,
-        error:  true,
-      }, ...advisorCards].slice(0, 5)
-    } finally {
-      pendingTip = false
+      wsError = e.message || 'Connection failed'
+      wsConnecting = false
+      wsConnected = false
     }
+  }
+
+  async function enableSystemAudio() {
+    if (systemAudio || !liveConnection) return
+    systemAudio = createSystemAudioRecorder({
+      onSegment(base64Audio) {
+        if (liveConnection && !stopped) {
+          liveConnection.sendAudio(base64Audio, 'tab')
+        }
+      },
+      segmentIntervalMs: 6000,
+    })
+    hasSystemAudio = await systemAudio.start()
+  }
+
+  function stopLiveSession() {
+    isRecording = false
+    stopped = true
+    hasSystemAudio = false
+    if (liveConnection) { liveConnection.close(); liveConnection = null }
+    if (mic) { mic.stop(); mic = null }
+    if (systemAudio) { systemAudio.stop(); systemAudio = null }
+    wsConnected = false
+    dispatch('endMeeting')
   }
 
   onMount(() => {
     elapsedTimer = setInterval(() => elapsed++, 1000)
-
-    lineTimer = setInterval(async () => {
-      if (currentIdx >= transcriptFeed.length) return
-
-      const line = transcriptFeed[currentIdx]
-      displayedLines = [...displayedLines, line]
-      transcriptText += `${line.speaker}: ${line.text}\n`
-      currentIdx++
-
-      // Fast layer: classify → slow layer if trigger found
-      const trigger = detectTrigger(line.text)
-      if (trigger) {
-        await fetchTip(trigger, line)
-      }
-    }, 2400)
+    // Auto-start only if a meeting is selected
+    if (meeting) {
+      startLiveSession()
+    }
   })
 
   onDestroy(() => {
-    clearInterval(lineTimer)
     clearInterval(elapsedTimer)
+    stopped = true
+    if (liveConnection) liveConnection.close()
+    if (mic) mic.stop()
+    if (systemAudio) systemAudio.stop()
   })
 
   function fmtElapsed(s) {
     const m   = Math.floor(s / 60).toString().padStart(2, '0')
     const sec = (s % 60).toString().padStart(2, '0')
     return `${m}:${sec}`
+  }
+
+  // Remove "fresh" flag after animation
+  $: {
+    // noop — reactivity trigger for advisorCards
+    void advisorCards
   }
 </script>
 
@@ -128,12 +187,24 @@
   <div class="transcript-panel">
     <div class="panel-head">
       <div class="live-indicator">
-        <span class="live-dot"></span> В ЭФИРЕ
+        {#if wsConnected}
+          <span class="live-dot"></span> В ЭФИРЕ
+        {:else if wsConnecting}
+          <span class="live-dot connecting"></span> ПОДКЛЮЧЕНИЕ...
+        {:else}
+          <span class="live-dot offline"></span> ОФЛАЙН
+        {/if}
       </div>
       <div class="elapsed">{fmtElapsed(elapsed)}</div>
-      <button class="end-btn" on:click={() => dispatch('endMeeting')}>
-        ⏹ Завершить
-      </button>
+      {#if wsConnected || isRecording}
+        <button class="end-btn" on:click={stopLiveSession}>
+          ⏹ Завершить
+        </button>
+      {:else}
+        <button class="start-btn" on:click={startLiveSession} disabled={wsConnecting || !meeting}>
+          {wsConnecting ? 'Подключение...' : '▶ Начать'}
+        </button>
+      {/if}
     </div>
 
     <div class="meeting-meta-bar">
@@ -141,6 +212,13 @@
       <span>·</span>
       <span>{meeting?.contact ?? ''}</span>
     </div>
+
+    {#if wsError}
+      <div class="ws-error">
+        ⚠️ {wsError}
+        <button class="retry-btn" on:click={startLiveSession}>Повторить</button>
+      </div>
+    {/if}
 
     <div class="transcript-scroll">
       {#each displayedLines as line}
@@ -150,7 +228,21 @@
         </div>
       {/each}
 
-      {#if currentIdx < transcriptFeed.length}
+      {#if displayedLines.length === 0}
+        <div class="waiting">
+          {#if !meeting}
+            <span class="listening-label">Выберите встречу на экране «Подготовка», затем нажмите «Начать»</span>
+          {:else if wsConnecting}
+            <span class="wave"></span><span class="wave"></span><span class="wave"></span>
+            <span class="listening-label">Подключение к DialogScribe...</span>
+          {:else if wsConnected}
+            <span class="wave"></span><span class="wave"></span><span class="wave"></span>
+            <span class="listening-label">Слушаю микрофон...</span>
+          {:else}
+            <span class="listening-label">Нажмите «Начать» для подключения</span>
+          {/if}
+        </div>
+      {:else if wsConnected}
         <div class="listening">
           <span class="wave"></span><span class="wave"></span><span class="wave"></span>
           <span class="listening-label">Слушаю…</span>
@@ -159,13 +251,32 @@
     </div>
 
     <div class="audio-bar">
-      <div class="audio-label">🎤 AssemblyAI Streaming (симуляция)</div>
-      <div class="audio-vis">
-        {#each Array(18) as _, i}
-          <div class="bar" style="animation-delay:{i * 0.07}s"></div>
-        {/each}
+      <div class="audio-label">
+        {#if isRecording}
+          🎤 Микрофон{#if hasSystemAudio} + 🔊 Звук системы{/if}
+        {:else}
+          🎤 Микрофон
+        {/if}
       </div>
-      <div class="audio-label">transcribe_stream</div>
+      {#if isRecording && !hasSystemAudio}
+        <button class="sys-audio-btn" on:click={enableSystemAudio}>
+          🔊 Включить звук собеседника
+        </button>
+      {/if}
+      {#if isRecording}
+        <div class="audio-vis">
+          {#each Array(18) as _, i}
+            <div class="bar" style="animation-delay:{i * 0.07}s"></div>
+          {/each}
+        </div>
+      {/if}
+      <div class="audio-label">
+        {#if hasSystemAudio}
+          🎤 [Вы] · 🔊 [Клиент]
+        {:else}
+          🎤 [Вы] · нажмите кнопку для [Клиент]
+        {/if}
+      </div>
     </div>
   </div>
 
@@ -174,10 +285,12 @@
     <div class="advisor-header">
       <div class="advisor-title">⚡ Live Advisor Agent</div>
       <div class="advisor-sub">
-        {#if pendingTip}
-          <span class="fetching">⟳ Запрашиваю совет…</span>
+        {#if wsConnecting}
+          <span class="fetching">⟳ Подключение к WebSocket...</span>
+        {:else if wsConnected}
+          Советы через DialogScribe Live Hints
         {:else}
-          Советы через DialogScribe /api/chat
+          Не подключено
         {/if}
       </div>
     </div>
@@ -198,12 +311,12 @@
         {#each advisorCards as card}
           <div
             class="tip-card"
-            class:tip-error={card.error}
-            style="border-color:{typeColors[card.type]}33; background:{typeColors[card.type]}0a"
+            class:tip-loading={card.loading}
+            style="border-color:{typeColors[card.type] || '#3b82f6'}33; background:{typeColors[card.type] || '#3b82f6'}0a"
           >
             <div class="tip-header">
-              <span class="tip-badge" style="background:{typeColors[card.type]}22; color:{typeColors[card.type]}">
-                {typeLabels[card.type]}
+              <span class="tip-badge" style="background:{typeColors[card.type] || '#3b82f6'}22; color:{typeColors[card.type] || '#3b82f6'}">
+                {typeLabels[card.type] || card.type}
               </span>
               <span class="tip-title">{card.title}</span>
             </div>
@@ -217,17 +330,21 @@
     <div class="cascade-info">
       <div class="cascade-row">
         <span class="cascade-label">Быстрый слой</span>
-        <span class="cascade-status active">Keyword classifier · локально</span>
+        <span class="cascade-status" class:active={wsConnected}>
+          Keyword classifier · {wsConnected ? 'активен' : 'ожидает'}
+        </span>
       </div>
       <div class="cascade-row">
         <span class="cascade-label">Медленный слой</span>
         <span class="cascade-status" class:active={advisorCards.length > 0}>
-          POST /api/chat · {advisorCards.length > 0 ? 'активен' : 'ожидает триггер'}
+          WS /api/live-hints · {advisorCards.length > 0 ? 'активен' : 'ожидает триггер'}
         </span>
       </div>
       <div class="cascade-row">
         <span class="cascade-label">Backend</span>
-        <span class="cascade-status active">DialogScribe</span>
+        <span class="cascade-status" class:active={wsConnected}>
+          DialogScribe {wsConnected ? '🟢' : wsConnecting ? '🟡' : '🔴'}
+        </span>
       </div>
     </div>
   </div>
@@ -276,6 +393,8 @@
     background: #ef4444;
     animation: pulse 1.2s ease-in-out infinite;
   }
+  .live-dot.connecting { background: #f59e0b }
+  .live-dot.offline { background: #4b5a7a; animation: none }
 
   @keyframes pulse {
     0%, 100% { opacity: 1; transform: scale(1) }
@@ -303,6 +422,20 @@
   }
   .end-btn:hover { background: rgba(239,68,68,0.25) }
 
+  .start-btn {
+    padding: 6px 14px;
+    background: rgba(16,185,129,0.15);
+    border: 1px solid rgba(16,185,129,0.3);
+    color: #34d399;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .start-btn:hover { background: rgba(16,185,129,0.25) }
+  .start-btn:disabled { opacity: 0.5; cursor: not-allowed }
+
   .meeting-meta-bar {
     padding: 8px 20px;
     font-size: 12px;
@@ -313,6 +446,27 @@
     flex-shrink: 0;
   }
   .meeting-meta-bar strong { color: #6b7db3 }
+
+  .ws-error {
+    padding: 10px 20px;
+    background: rgba(239,68,68,0.08);
+    border-bottom: 1px solid rgba(239,68,68,0.2);
+    font-size: 12px;
+    color: #f87171;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .retry-btn {
+    padding: 3px 10px;
+    background: rgba(239,68,68,0.15);
+    border: 1px solid rgba(239,68,68,0.3);
+    color: #f87171;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+  }
 
   .transcript-scroll {
     flex: 1;
@@ -363,6 +517,16 @@
   }
   .listening-label { margin-left: 4px }
 
+  .waiting {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 20px 14px;
+    color: #4b5a7a;
+    font-size: 13px;
+  }
+
   .wave {
     display: inline-block;
     width: 4px; height: 4px;
@@ -387,6 +551,18 @@
     flex-shrink: 0;
   }
   .audio-label { font-size: 11px; color: #4b5a7a; white-space: nowrap }
+  .sys-audio-btn {
+    padding: 4px 10px;
+    background: rgba(59,130,246,0.15);
+    border: 1px solid rgba(59,130,246,0.3);
+    color: #60a5fa;
+    border-radius: 6px;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .sys-audio-btn:hover { background: rgba(59,130,246,0.25) }
   .audio-vis { display: flex; align-items: center; gap: 2px; flex: 1 }
   .bar {
     width: 3px;
@@ -463,7 +639,7 @@
     border: 1px solid;
     animation: slideIn 0.35s ease;
   }
-  .tip-card.tip-error { opacity: 0.7 }
+  .tip-card.tip-loading { opacity: 0.6 }
 
   @keyframes slideIn {
     from { opacity: 0; transform: translateX(10px) }
