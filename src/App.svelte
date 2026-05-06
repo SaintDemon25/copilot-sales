@@ -8,6 +8,8 @@
 
   let activeView = 'today'   // 'today' | 'live' | 'post'
   let activeMeeting = null
+  let liveTranscript = ''
+  let liveDuration = 0
 
   function handleMeetingSelect(e) {
     activeMeeting = e.detail
@@ -19,8 +21,22 @@
     activeView = 'live'
   }
 
+  function handleEndMeeting(e) {
+    liveTranscript = e.detail?.transcript ?? ''
+    liveDuration = e.detail?.elapsed ?? 0
+    activeView = 'post'
+  }
+
+  function handlePostMeetingBack() {
+    activeView = 'today'
+    liveTranscript = ''
+    liveDuration = 0
+  }
+
   function handlePostMeeting(e) {
     activeMeeting = e.detail
+    liveTranscript = ''
+    liveDuration = 0
     activeView = 'post'
   }
 </script>
@@ -42,12 +58,14 @@
       {:else if activeView === 'live'}
         <LiveAdvisor
           meeting={activeMeeting}
-          on:endMeeting={() => { activeView = 'post' }}
+          on:endMeeting={handleEndMeeting}
         />
       {:else if activeView === 'post'}
         <PostMeeting
           meeting={activeMeeting}
-          on:back={() => { activeView = 'today' }}
+          liveTranscript={liveTranscript}
+          liveDuration={liveDuration}
+          on:back={handlePostMeetingBack}
         />
       {/if}
     </div>

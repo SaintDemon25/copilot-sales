@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0] - 2026-05-07
+
+### Added
+- **Seamless Live → Post-Meeting transition** — ending a live call now auto-processes the accumulated transcript for summary + insights, no file upload needed
+- **Live transcript pipeline** — LiveAdvisor dispatches transcript + duration on meeting end, PostMeeting auto-detects and calls `/api/summary` + `/api/insights` directly
+- **E2E test for post-meeting flow** — verifies DialogScribe `/api/summary` and `/api/insights` endpoints work with live transcript text, validates data shapes
+
+### Changed
+- `LiveAdvisor.svelte` — `stopLiveSession()` now dispatches `{ transcript, displayedLines, elapsed }` with the `endMeeting` event
+- `App.svelte` — captures live transcript + duration from LiveAdvisor, passes to PostMeeting as props
+- `PostMeeting.svelte` — auto-processes when `liveTranscript` prop is provided; shows "Live-транскрипт" badge, duration, and manual upload link at bottom
+
+### Fixed
+- PostMeeting no longer requires file upload after a live call (was confusing UX)
+
 ## [0.2.0] - 2026-05-06
 
 ### Added
