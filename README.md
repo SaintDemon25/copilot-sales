@@ -53,12 +53,89 @@ Shared Memory (client context + meeting history) is accessible by all agents. Th
 
 ---
 
+## Backend Integration — DialogScribe
+
+The Post-Meeting and Live Advisor screens connect to [DialogScribe](https://github.com/Timik232/DialogScribe) — a self-hosted speech-to-text + LLM analysis backend (FastAPI, port 7860).
+
+### Endpoints used
+
+| Endpoint | Used by | Purpose |
+|---|---|---|
+| `GET /health` | `AgentStatusBar` | Backend health polling (every 30 s) |
+| `POST /api/auth/login` | `src/lib/api.js` | Auto-login → JWT token |
+| `POST /api/transcribe` | `PostMeeting` | Upload audio/video → transcript + diarization |
+| `POST /api/summary` | `PostMeeting` | Generate structured meeting summary |
+| `POST /api/insights` | `PostMeeting` | Extract action items, decisions, insights |
+| `POST /api/chat` | `LiveAdvisor` | Real-time advisor tip per trigger fragment |
+
+### Authentication
+
+DialogScribe requires a JWT Bearer token for all `/api/*` routes. The API client handles this transparently:
+1. On the first call, `api.js` posts `VITE_DS_EMAIL` / `VITE_DS_PASSWORD` to `/api/auth/login`
+2. The returned `access_token` is cached in memory for all subsequent requests
+3. If a request returns 401 (token expired), the client re-logs in and retries automatically
+
+Credentials default to `admin@local.dev` / `admin123` — matching the values set by `docker-compose.fullstack.yaml`.
+
+### API wire format notes
+
+DialogScribe's endpoints differ slightly from generic OpenAI conventions:
+
+| Endpoint | Field sent | Field returned |
+|---|---|---|
+| `POST /api/transcribe` | `diarization_mode: "simple"` | `{text, segments, duration, language}` |
+| `POST /api/summary` | `{text, template_key?}` | `{summary_markdown, summary_html}` |
+| `POST /api/chat` | `{text, messages: [{role,content}]}` | `{answer}` |
+
+`api.js` normalises these into a consistent shape so components don't need to know the details.
+
+### Full-stack Docker setup (recommended)
+
+Eliminates CORS entirely — nginx serves the frontend and proxies all `/api/*`, `/health`, `/v1/*` requests to DialogScribe on the internal Docker network.
+
+**Prerequisites:** Docker Desktop, a Mistral API key.
+
+```bash
+# 1. Clone DialogScribe alongside this repo
+git clone https://github.com/Timik232/DialogScribe ../DialogScribe
+
+# 2. Set your Mistral key in docker-compose.fullstack.yaml
+#    (MISTRAL_API_KEY / LLM_API_KEY fields in the dialogscribe service)
+
+# 3. Build and start both services
+docker compose -f docker-compose.fullstack.yaml up --build
+
+# → Frontend + API available at http://localhost:5173
+```
+
+The `dialogscribe` service exposes only port 7860 on the internal `app-net` network (not to the host), so the browser always talks to a single origin through nginx.
+
+### Dev setup (frontend only, no Docker)
+
+```bash
+npm install
+cp .env.example .env
+# Set VITE_API_BASE_URL=http://localhost:7860 and ensure DialogScribe is running
+npm run dev
+```
+
+In this mode the frontend talks directly to DialogScribe on port 7860. DialogScribe must have CORS enabled or be proxied separately.
+
+### Fallback behaviour
+
+Both live components degrade gracefully when the backend is offline:
+- **Live Advisor** — shows a warning chip with the detected trigger keyword; does not block the transcript stream
+- **Post-Meeting** — "Демо-режим" button runs the full UI flow with mock data so the demo never breaks
+
+---
+
 ## Tech Stack
 
 | Layer | Choice |
 |---|---|
 | Framework | [Svelte 4](https://svelte.dev) |
 | Build tool | [Vite 5](https://vitejs.dev) |
+| Backend | [DialogScribe](https://github.com/Timik232/DialogScribe) (FastAPI + Mistral Voxtral) |
 | Styling | Scoped CSS (dark theme, no external CSS lib) |
 | Font | Inter (Google Fonts) |
 | State | Svelte stores + component props |
@@ -67,11 +144,21 @@ Shared Memory (client context + meeting history) is accessible by all agents. Th
 
 ## Getting Started
 
-```bash
-# Install dependencies
-npm install
+### Option A — Full stack (Docker, recommended)
 
-# Start dev server
+```bash
+git clone https://github.com/Timik232/DialogScribe ../DialogScribe
+# edit docker-compose.fullstack.yaml → set MISTRAL_API_KEY / LLM_API_KEY
+docker compose -f docker-compose.fullstack.yaml up --build
+# → http://localhost:5173
+```
+
+### Option B — Frontend only (npm)
+
+```bash
+npm install
+cp .env.example .env
+# set VITE_API_BASE_URL=http://localhost:7860 and start DialogScribe separately
 npm run dev
 # → http://localhost:5173
 
@@ -87,13 +174,15 @@ npm run build
 src/
 ├── main.js
 ├── App.svelte                  # Root shell + view router
+├── lib/
+│   └── api.js                  # DialogScribe API client (all endpoints)
 └── components/
     ├── Sidebar.svelte          # Navigation: Сегодня / В эфире / Итоги
-    ├── AgentStatusBar.svelte   # Live agent status chips + clock
+    ├── AgentStatusBar.svelte   # Agent status chips + DialogScribe health indicator
     ├── MeetingList.svelte      # Today's schedule with Prep Agent status
     ├── ClientDossier.svelte    # Client dossier: stats, pain points, news, competitors
-    ├── LiveAdvisor.svelte      # Live transcript + real-time AI tips
-    └── PostMeeting.svelte      # Post-meeting summary, action items, coaching
+    ├── LiveAdvisor.svelte      # Live transcript + real-time tips via /api/chat
+    └── PostMeeting.svelte      # File upload → transcribe → summary/insights pipeline
 ```
 
 ---
