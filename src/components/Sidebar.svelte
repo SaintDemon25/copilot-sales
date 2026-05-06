@@ -1,5 +1,11 @@
 <script>
   export let activeView
+  export let isRecording = false
+
+  const userName = import.meta.env.VITE_USER_NAME ?? 'Алексей Козлов'
+  const userRole = import.meta.env.VITE_USER_ROLE ?? 'Менеджер продаж'
+
+  const initials = userName.split(' ').map(w => w[0]).join('').substring(0, 2)
 
   const navItems = [
     { id: 'today', icon: '📅', label: 'Сегодня' },
@@ -23,7 +29,9 @@
       >
         <span class="nav-icon">{item.icon}</span>
         <span class="nav-label">{item.label}</span>
-        {#if item.id === 'live'}
+        {#if item.id === 'live' && isRecording}
+          <span class="live-pulse"></span>
+        {:else if item.id === 'live'}
           <span class="live-badge">LIVE</span>
         {/if}
       </button>
@@ -32,10 +40,10 @@
 
   <div class="sidebar-footer">
     <div class="user-card">
-      <div class="avatar">АК</div>
+      <div class="avatar">{initials}</div>
       <div class="user-info">
-        <div class="user-name">Алексей Козлов</div>
-        <div class="user-role">Менеджер продаж</div>
+        <div class="user-name">{userName}</div>
+        <div class="user-role">{userRole}</div>
       </div>
     </div>
   </div>
@@ -142,6 +150,20 @@
     color: #fff;
     padding: 2px 5px;
     border-radius: 4px;
+  }
+
+  .live-pulse {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ef4444;
+    animation: livePulse 1.2s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes livePulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5) }
+    50%       { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0) }
   }
 
   .sidebar-footer {
