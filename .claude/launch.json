@@ -1,0 +1,31 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "CoPilot Sales — Vite dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "DialogScribe — Docker dev",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": [
+        "compose",
+        "-f", "C:\\Users\\Saint\\Documents\\Code\\DialogScribe\\docker-compose.dev.yaml",
+        "up", "--build"
+      ],
+      "port": 7860
+    },
+    {
+      "name": "Full Stack — Docker (frontend + dialogscribe)",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": [
+        "compose",
+        "-f", "C:\\Users\\Saint\\Documents\\Code\\Zakuper\\docker-compose.fullstack.yaml",
+        "up", "--build"
+      ],
+      "port": 5173
+    }
+  ]
+}
