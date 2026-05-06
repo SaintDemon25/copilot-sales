@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte'
-  import { connectLiveHints, createMicRecorder } from '../lib/api.js'
+  import { connectLiveHints, createMicRecorder, createSystemAudioRecorder } from '../lib/api.js'
 
   const dispatch = createEventDispatcher()
   export let meeting
@@ -17,6 +17,8 @@
   let wsError = ''
   let isRecording = false
   let mic
+  let systemAudio
+  let hasSystemAudio = false
 
   // ---- Live connection ----
   let liveConnection = null
@@ -127,19 +129,36 @@
     }
   }
 
+  async function enableSystemAudio() {
+    if (systemAudio || !liveConnection) return
+    systemAudio = createSystemAudioRecorder({
+      onSegment(base64Audio) {
+        if (liveConnection && !stopped) {
+          liveConnection.sendAudio(base64Audio, 'tab')
+        }
+      },
+      segmentIntervalMs: 6000,
+    })
+    hasSystemAudio = await systemAudio.start()
+  }
+
   function stopLiveSession() {
     isRecording = false
     stopped = true
+    hasSystemAudio = false
     if (liveConnection) { liveConnection.close(); liveConnection = null }
     if (mic) { mic.stop(); mic = null }
+    if (systemAudio) { systemAudio.stop(); systemAudio = null }
     wsConnected = false
     dispatch('endMeeting')
   }
 
   onMount(() => {
     elapsedTimer = setInterval(() => elapsed++, 1000)
-    // Auto-start live session
-    startLiveSession()
+    // Auto-start only if a meeting is selected
+    if (meeting) {
+      startLiveSession()
+    }
   })
 
   onDestroy(() => {
@@ -147,6 +166,7 @@
     stopped = true
     if (liveConnection) liveConnection.close()
     if (mic) mic.stop()
+    if (systemAudio) systemAudio.stop()
   })
 
   function fmtElapsed(s) {
@@ -181,7 +201,7 @@
           ⏹ Завершить
         </button>
       {:else}
-        <button class="start-btn" on:click={startLiveSession} disabled={wsConnecting}>
+        <button class="start-btn" on:click={startLiveSession} disabled={wsConnecting || !meeting}>
           {wsConnecting ? 'Подключение...' : '▶ Начать'}
         </button>
       {/if}
@@ -210,7 +230,9 @@
 
       {#if displayedLines.length === 0}
         <div class="waiting">
-          {#if wsConnecting}
+          {#if !meeting}
+            <span class="listening-label">Выберите встречу на экране «Подготовка», затем нажмите «Начать»</span>
+          {:else if wsConnecting}
             <span class="wave"></span><span class="wave"></span><span class="wave"></span>
             <span class="listening-label">Подключение к DialogScribe...</span>
           {:else if wsConnected}
@@ -231,11 +253,16 @@
     <div class="audio-bar">
       <div class="audio-label">
         {#if isRecording}
-          🎤 Запись · {#if wsConnected}отправка в DialogScribe WS{:else}ожидание подключения{/if}
+          🎤 Микрофон{#if hasSystemAudio} + 🔊 Звук системы{/if}
         {:else}
           🎤 Микрофон
         {/if}
       </div>
+      {#if isRecording && !hasSystemAudio}
+        <button class="sys-audio-btn" on:click={enableSystemAudio}>
+          🔊 Включить звук собеседника
+        </button>
+      {/if}
       {#if isRecording}
         <div class="audio-vis">
           {#each Array(18) as _, i}
@@ -243,7 +270,13 @@
           {/each}
         </div>
       {/if}
-      <div class="audio-label">/api/live-hints/ws</div>
+      <div class="audio-label">
+        {#if hasSystemAudio}
+          🎤 [Вы] · 🔊 [Клиент]
+        {:else}
+          🎤 [Вы] · нажмите кнопку для [Клиент]
+        {/if}
+      </div>
     </div>
   </div>
 
@@ -518,6 +551,18 @@
     flex-shrink: 0;
   }
   .audio-label { font-size: 11px; color: #4b5a7a; white-space: nowrap }
+  .sys-audio-btn {
+    padding: 4px 10px;
+    background: rgba(59,130,246,0.15);
+    border: 1px solid rgba(59,130,246,0.3);
+    color: #60a5fa;
+    border-radius: 6px;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .sys-audio-btn:hover { background: rgba(59,130,246,0.25) }
   .audio-vis { display: flex; align-items: center; gap: 2px; flex: 1 }
   .bar {
     width: 3px;

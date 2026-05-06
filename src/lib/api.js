@@ -2,6 +2,11 @@
  * DialogScribe API client
  */
 
+/* global window */
+
+/** @type {any} */
+const _win = typeof window !== 'undefined' ? window : {}
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 const API_KEY  = import.meta.env.VITE_API_KEY ?? ''
 const DS_EMAIL = import.meta.env.VITE_DS_EMAIL ?? 'admin@local.dev'
@@ -349,6 +354,112 @@ export async function connectLiveHints({ onTranscript, onHint, onStatus, onError
  * @returns {Promise<{ start: () => void, stop: () => void }>}
  */
 export function createMicRecorder({ onSegment, segmentIntervalMs = 6000 }) {
+  return createStopStartRecorder({
+    getStream: () => navigator.mediaDevices.getUserMedia({ audio: true }),
+    onSegment,
+    segmentIntervalMs,
+  })
+}
+
+/**
+ * System audio recorder — captures what the OTHER person says (VKS, browser tab, etc).
+ *
+ * In Electron: uses native WASAPI loopback capture via IPC (bypasses Chromium USB audio bug).
+ * The main process spawns wasapi_loopback.exe which captures system audio natively.
+ *
+ * In browser: uses getDisplayMedia — user must share a screen/tab with audio.
+ *
+ * @param {{ onSegment: (base64: string) => void, segmentIntervalMs?: number }} opts
+ * @returns {Promise<{ start: () => Promise<boolean>, stop: () => void }>}
+ */
+export function createSystemAudioRecorder({ onSegment }) {
+  let listening = false
+
+  return {
+    async start() {
+      // Electron native WASAPI loopback capture
+      if (_win.electronAPI?.startSystemAudio) {
+        try {
+          const ok = await _win.electronAPI.startSystemAudio()
+          if (!ok) {
+            console.warn('WASAPI loopback capture failed to start')
+            return false
+          }
+
+          // Listen for audio chunks from main process
+          listening = true
+          _win.electronAPI.onSystemAudioChunk((b64Wav) => {
+            if (listening && b64Wav) {
+              onSegment(b64Wav)
+            }
+          })
+          return true
+        } catch (e) {
+          console.warn('Native system audio capture failed:', e.message)
+          return false
+        }
+      }
+
+      // Browser fallback: getDisplayMedia
+      return createBrowserSystemAudioRecorder({ onSegment })
+    },
+    stop() {
+      listening = false
+      if (_win.electronAPI?.stopSystemAudio) {
+        _win.electronAPI.stopSystemAudio()
+      }
+      if (_win.electronAPI?.removeSystemAudioListener) {
+        _win.electronAPI.removeSystemAudioListener()
+      }
+    },
+  }
+}
+
+/**
+ * Browser fallback for system audio capture using getDisplayMedia.
+ */
+function createBrowserSystemAudioRecorder({ onSegment, segmentIntervalMs = 6000 }) {
+  let inner = null
+
+  const recorder = createStopStartRecorder({
+    getStream: async () => {
+      if (_win.electronAPI?.enableLoopbackAudio) {
+        await _win.electronAPI.enableLoopbackAudio()
+      }
+      const ds = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+      ds.getVideoTracks().forEach(t => { t.stop(); ds.removeTrack(t) })
+      const audioTracks = ds.getAudioTracks()
+      if (audioTracks.length === 0) {
+        ds.getTracks().forEach(t => t.stop())
+        throw new Error('No system audio track captured.')
+      }
+      return ds
+    },
+    onSegment,
+    segmentIntervalMs,
+  })
+
+  return {
+    async start() {
+      try {
+        await inner.start()
+        return true
+      } catch (e) {
+        console.warn('Browser system audio capture failed:', e.message)
+        return false
+      }
+    },
+    stop() {
+      inner.stop()
+    },
+  }
+}
+
+/**
+ * Shared stop-start recorder implementation.
+ * Cycles: start MediaRecorder → wait N sec → stop → collect complete WebM → callback → restart.
+ */
+function createStopStartRecorder({ getStream, onSegment, segmentIntervalMs = 6000 }) {
   let stream = null
   let recorder = null
   let cycleTimer = null
@@ -356,7 +467,6 @@ export function createMicRecorder({ onSegment, segmentIntervalMs = 6000 }) {
 
   async function startSegment() {
     if (stopped || !stream) return
-    // Collect ALL data for this segment (no timeslice)
     recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
     const segChunks = []
 
@@ -374,22 +484,20 @@ export function createMicRecorder({ onSegment, segmentIntervalMs = 6000 }) {
         }
         reader.readAsDataURL(blob)
       }
-      // Auto-start next segment if still running
       if (!stopped) startSegment()
     }
 
-    recorder.start() // No timeslice → complete file on stop()
+    recorder.start()
   }
 
   return {
     async start() {
       stopped = false
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream = await getStream()
       await startSegment()
-      // Periodically finalize current segment and begin a new one
       cycleTimer = setInterval(() => {
         if (recorder && recorder.state === 'recording') {
-          recorder.stop() // triggers onstop → collects → sends → restarts
+          recorder.stop()
         }
       }, segmentIntervalMs)
     },
