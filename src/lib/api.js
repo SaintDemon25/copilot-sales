@@ -254,3 +254,156 @@ export async function exportTranscript(transcript, format = 'docx') {
   a.click()
   URL.revokeObjectURL(url)
 }
+
+// ---------------------------------------------------------------------------
+// Live Advisor — WebSocket
+// ---------------------------------------------------------------------------
+
+/**
+ * Connect to the DialogScribe Live Hints WebSocket.
+ *
+ * @param {{ onTranscript: (msg: object) => void, onHint: (msg: object) => void, onStatus: (msg: object) => void, onError: (msg: object) => void }} handlers
+ * @returns {Promise<{ ws: WebSocket, sendAudio: (base64: string, source: string) => void, sendConfig: (templateKey: string, contextText?: string) => void, close: () => void }>}
+ */
+export async function connectLiveHints({ onTranscript, onHint, onStatus, onError }) {
+  await ensureToken()
+
+  const wsUrl = BASE_URL
+    ? BASE_URL.replace(/^http/, 'ws') + '/api/live-hints/ws?token=' + encodeURIComponent(_token)
+    : `ws://${location.host}/api/live-hints/ws?token=${encodeURIComponent(_token)}`
+
+  const ws = new WebSocket(wsUrl)
+
+  return new Promise((resolve, reject) => {
+    ws.addEventListener('open', () => {
+      resolve({
+        ws,
+        sendConfig(templateKey, contextText = '') {
+          ws.send(JSON.stringify({
+            type: 'session_config',
+            template_key: templateKey,
+            context_text: contextText,
+          }))
+        },
+        sendAudio(base64, source = 'mic') {
+          ws.send(JSON.stringify({
+            type: 'audio_chunk',
+            audio_b64: base64,
+            source,
+          }))
+        },
+        sendHintFeedback(hintId, rating) {
+          ws.send(JSON.stringify({
+            type: 'hint_feedback',
+            hint_id: hintId,
+            rating,
+          }))
+        },
+        close() {
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close()
+          }
+        },
+      })
+    })
+
+    ws.addEventListener('message', (event) => {
+      let msg
+      try { msg = JSON.parse(event.data) } catch { return }
+
+      switch (msg.type) {
+        case 'transcript':
+          onTranscript?.(msg)
+          break
+        case 'hint':
+          onHint?.(msg)
+          break
+        case 'status':
+          onStatus?.(msg)
+          break
+        case 'error':
+          onError?.(msg)
+          break
+      }
+    })
+
+    ws.addEventListener('error', (e) => {
+      onError?.({ code: 'ws_error', message: 'WebSocket connection error' })
+      reject(e)
+    })
+
+    ws.addEventListener('close', () => {
+      onStatus?.({ status: 'disconnected' })
+    })
+  })
+}
+
+/**
+ * Microphone recorder using stop-start cycling.
+ *
+ * Each cycle produces a COMPLETE, valid WebM file (with proper headers).
+ * This avoids the issue where MediaRecorder timeslice mode produces
+ * continuation fragments that ASR services can't decode.
+ *
+ * @param {{ onSegment: (base64: string) => void, segmentIntervalMs?: number }} opts
+ * @returns {Promise<{ start: () => void, stop: () => void }>}
+ */
+export function createMicRecorder({ onSegment, segmentIntervalMs = 6000 }) {
+  let stream = null
+  let recorder = null
+  let cycleTimer = null
+  let stopped = false
+
+  async function startSegment() {
+    if (stopped || !stream) return
+    // Collect ALL data for this segment (no timeslice)
+    recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
+    const segChunks = []
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) segChunks.push(e.data)
+    }
+
+    recorder.onstop = () => {
+      if (segChunks.length > 0 && !stopped) {
+        const blob = new Blob(segChunks, { type: 'audio/webm;codecs=opus' })
+        const reader = new FileReader()
+        reader.onloadend = () => {
+          const b64 = reader.result.split(',')[1]
+          if (b64 && !stopped) onSegment(b64)
+        }
+        reader.readAsDataURL(blob)
+      }
+      // Auto-start next segment if still running
+      if (!stopped) startSegment()
+    }
+
+    recorder.start() // No timeslice → complete file on stop()
+  }
+
+  return {
+    async start() {
+      stopped = false
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      await startSegment()
+      // Periodically finalize current segment and begin a new one
+      cycleTimer = setInterval(() => {
+        if (recorder && recorder.state === 'recording') {
+          recorder.stop() // triggers onstop → collects → sends → restarts
+        }
+      }, segmentIntervalMs)
+    },
+
+    stop() {
+      stopped = true
+      if (cycleTimer) { clearInterval(cycleTimer); cycleTimer = null }
+      if (recorder && recorder.state === 'recording') {
+        recorder.stop()
+      }
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop())
+        stream = null
+      }
+    },
+  }
+}
