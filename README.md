@@ -53,12 +53,57 @@ Shared Memory (client context + meeting history) is accessible by all agents. Th
 
 ---
 
+## Backend Integration — DialogScribe
+
+The Post-Meeting and Live Advisor screens connect to [DialogScribe](https://github.com/Timik232/DialogScribe) — a self-hosted speech-to-text + LLM analysis backend.
+
+### Endpoints used
+
+| Endpoint | Used by | Purpose |
+|---|---|---|
+| `GET /health` | `AgentStatusBar` | Backend health polling (every 30 s) |
+| `POST /api/transcribe` | `PostMeeting` | Upload audio/video → transcript + diarization |
+| `POST /api/summary` | `PostMeeting` | Generate structured meeting summary |
+| `POST /api/insights` | `PostMeeting` | Extract action items, decisions, insights |
+| `POST /api/chat` | `LiveAdvisor` | Real-time advisor tip per trigger fragment |
+| `POST /v1/audio/transcriptions` | `src/lib/api.js` | OpenAI-compatible transcription endpoint |
+
+### Setup
+
+1. Clone and run DialogScribe:
+   ```bash
+   git clone https://github.com/Timik232/DialogScribe
+   cd DialogScribe
+   docker compose up
+   # or: uvicorn app.main:app --reload
+   # default port: 8000
+   ```
+
+2. Configure the frontend:
+   ```bash
+   cp .env.example .env
+   # Edit .env:
+   VITE_API_BASE_URL=http://localhost:8000
+   VITE_API_KEY=                        # leave blank if no auth configured
+   ```
+
+3. Start the dev server — the **DialogScribe** chip in the top bar turns **green** when the backend is reachable. Click it to re-check manually.
+
+### Fallback behaviour
+
+Both live components degrade gracefully when the backend is offline:
+- **Live Advisor** — shows a warning chip with the detected trigger keyword; does not block the transcript stream
+- **Post-Meeting** — "Демо-режим" button runs the full UI flow with mock data so the demo never breaks
+
+---
+
 ## Tech Stack
 
 | Layer | Choice |
 |---|---|
 | Framework | [Svelte 4](https://svelte.dev) |
 | Build tool | [Vite 5](https://vitejs.dev) |
+| Backend | [DialogScribe](https://github.com/Timik232/DialogScribe) (FastAPI + Mistral Voxtral) |
 | Styling | Scoped CSS (dark theme, no external CSS lib) |
 | Font | Inter (Google Fonts) |
 | State | Svelte stores + component props |
@@ -68,10 +113,15 @@ Shared Memory (client context + meeting history) is accessible by all agents. Th
 ## Getting Started
 
 ```bash
-# Install dependencies
+# 1. Start DialogScribe backend (see above)
+
+# 2. Install frontend dependencies
 npm install
 
-# Start dev server
+# 3. Configure env
+cp .env.example .env   # set VITE_API_BASE_URL if not localhost:8000
+
+# 4. Start dev server
 npm run dev
 # → http://localhost:5173
 
@@ -87,13 +137,15 @@ npm run build
 src/
 ├── main.js
 ├── App.svelte                  # Root shell + view router
+├── lib/
+│   └── api.js                  # DialogScribe API client (all endpoints)
 └── components/
     ├── Sidebar.svelte          # Navigation: Сегодня / В эфире / Итоги
-    ├── AgentStatusBar.svelte   # Live agent status chips + clock
+    ├── AgentStatusBar.svelte   # Agent status chips + DialogScribe health indicator
     ├── MeetingList.svelte      # Today's schedule with Prep Agent status
     ├── ClientDossier.svelte    # Client dossier: stats, pain points, news, competitors
-    ├── LiveAdvisor.svelte      # Live transcript + real-time AI tips
-    └── PostMeeting.svelte      # Post-meeting summary, action items, coaching
+    ├── LiveAdvisor.svelte      # Live transcript + real-time tips via /api/chat
+    └── PostMeeting.svelte      # File upload → transcribe → summary/insights pipeline
 ```
 
 ---
