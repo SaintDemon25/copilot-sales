@@ -132,6 +132,40 @@
     dispatch('toast', { message, type })
   }
 
+  // ---- Simple markdown renderer ----
+  function renderMarkdown(md) {
+    if (!md) return ''
+    return md
+      // Escape HTML entities
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      // Headers: ### → <h3>, ## → <h2>, # → <h1>
+      .replace(/^### (.+)$/gm, '<h4 class="md-h">$1</h4>')
+      .replace(/^## (.+)$/gm, '<h3 class="md-h">$1</h3>')
+      .replace(/^# (.+)$/gm, '<h2 class="md-h">$1</h2>')
+      // Bold: **text** or __text__
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/__(.+?)__/g, '<strong>$1</strong>')
+      // Italic: *text* or _text_
+      .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+      .replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>')
+      // Unordered lists: - item or * item
+      .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+      // Ordered lists: 1. item
+      .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+      // Wrap consecutive <li> in <ul>
+      .replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul class="md-list">$1</ul>')
+      // Line breaks → paragraphs (double newline)
+      .replace(/\n{2,}/g, '</p><p>')
+      // Single newlines within paragraphs
+      .replace(/\n/g, '<br>')
+      // Wrap in paragraph
+      .replace(/^(.+)$/, '<p>$1</p>')
+      // Clean up empty paragraphs
+      .replace(/<p>\s*<\/p>/g, '')
+  }
+
   // ---- Copy helper ----
   function copyToClipboard(text, label) {
     navigator.clipboard.writeText(text).then(() => {
@@ -382,7 +416,7 @@
           <span class="card-badge">{sourceBadge[source] ?? 'API'}</span>
           <button class="copy-btn" on:click={() => copyToClipboard(summaryText, 'Саммари')}>📋</button>
         </div>
-        <p class="summary-text">{summaryText}</p>
+        <div class="summary-text">{@html renderMarkdown(summaryText)}</div>
       </div>
 
       <!-- Action items -->
@@ -736,6 +770,42 @@
   }
 
   .summary-text { font-size: 14px; color: #8896b3; line-height: 1.65 }
+
+  .summary-text :global(.md-h) {
+    font-size: 15px;
+    font-weight: 700;
+    color: #c8d0e7;
+    margin: 16px 0 8px;
+  }
+  .summary-text :global(.md-h:first-child) {
+    margin-top: 0;
+  }
+  .summary-text :global(.md-list) {
+    margin: 8px 0;
+    padding-left: 20px;
+    list-style: none;
+  }
+  .summary-text :global(.md-list li) {
+    font-size: 14px;
+    color: #8896b3;
+    line-height: 1.65;
+    padding-left: 4px;
+    position: relative;
+  }
+  .summary-text :global(.md-list li::before) {
+    content: '•';
+    position: absolute;
+    left: -14px;
+    color: #3b82f6;
+  }
+  .summary-text :global(strong) {
+    color: #c8d0e7;
+    font-weight: 600;
+  }
+  .summary-text :global(em) {
+    color: #6b7db3;
+    font-style: italic;
+  }
 
   .action-list { display: flex; flex-direction: column; gap: 8px }
 
