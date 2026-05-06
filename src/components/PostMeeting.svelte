@@ -62,8 +62,8 @@
 
       summaryText = summaryData?.summary ?? summaryData?.text ?? String(summaryData)
       actionItems = normaliseActionItems(insightsData?.action_items ?? summaryData?.action_items ?? [])
-      decisions   = insightsData?.decisions ?? summaryData?.decisions ?? []
-      insights    = insightsData?.insights  ?? []
+      decisions   = normaliseDecisions(insightsData?.decisions ?? summaryData?.decisions ?? [])
+      insights    = normaliseInsights(insightsData?.suggested_steps ?? insightsData?.insights ?? [])
 
       phase = 'done'
     } catch (e) {
@@ -86,8 +86,8 @@
 
       summaryText = summaryData?.summary ?? summaryData?.text ?? String(summaryData)
       actionItems = normaliseActionItems(insightsData?.action_items ?? summaryData?.action_items ?? [])
-      decisions   = insightsData?.decisions ?? summaryData?.decisions ?? []
-      insights    = insightsData?.insights  ?? []
+      decisions   = normaliseDecisions(insightsData?.decisions ?? summaryData?.decisions ?? [])
+      insights    = normaliseInsights(insightsData?.suggested_steps ?? insightsData?.insights ?? [])
 
       phase = 'done'
     } catch (e) {
@@ -122,8 +122,30 @@
         task:     item.task ?? item.text ?? item.description ?? String(item),
         owner:    item.owner ?? item.assignee ?? 'Менеджер',
         priority: item.priority ?? 'medium',
+        deadline: item.deadline ?? null,
         done:     false,
       }
+    })
+  }
+
+  // Normalise decisions: string[] or {decision, context}[]
+  function normaliseDecisions(raw) {
+    if (!Array.isArray(raw)) return []
+    return raw.map(item => {
+      if (typeof item === 'string') return item
+      return item.decision ?? item.text ?? item.description ?? String(item)
+    })
+  }
+
+  // Normalise insights/steps: extract suggested_steps or insights
+  function normaliseInsights(raw) {
+    if (!Array.isArray(raw)) return []
+    return raw.map(item => {
+      if (typeof item === 'string') return item
+      // suggested_steps format: {step, reason, category}
+      if (item.step) return `${item.step}${item.reason ? ' — ' + item.reason : ''}`
+      if (item.insight) return item.insight
+      return item.text ?? String(item)
     })
   }
 
@@ -451,19 +473,34 @@
         <div class="card-header">
           <span class="card-icon">🔑</span>
           <span class="card-title">Ключевые решения</span>
+          <span class="count">{decisions.length}</span>
         </div>
         <ul class="decisions-list">
           {#each decisions as d}
             <li>{d}</li>
           {/each}
-          {#each insights as ins}
-            <li class="insight-item">{ins}</li>
-          {/each}
-          {#if decisions.length === 0 && insights.length === 0}
+          {#if decisions.length === 0}
             <li class="empty">Нет данных</li>
           {/if}
         </ul>
       </div>
+
+      <!-- Suggested next steps -->
+      {#if insights.length > 0}
+        <div class="result-card">
+          <div class="card-header">
+            <span class="card-icon">🚀</span>
+            <span class="card-title">Рекомендуемые шаги</span>
+            <span class="count">{insights.length}</span>
+            <button class="copy-btn" on:click={() => copyToClipboard(insights.join('\n'), 'Шаги')}>📋</button>
+          </div>
+          <ul class="steps-list">
+            {#each insights as ins}
+              <li>{@html renderMarkdown(ins)}</li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
 
       <!-- Transcript (collapsible) -->
       <div class="result-card wide">
@@ -837,7 +874,18 @@
     padding-left: 14px; position: relative; line-height: 1.5;
   }
   .decisions-list li::before { content: '›'; position: absolute; left: 0; color: #3b82f6; font-weight: 700 }
-  .insight-item { color: #6b7db3 !important }
+
+  .steps-list { list-style: none; display: flex; flex-direction: column; gap: 10px }
+  .steps-list li {
+    font-size: 13px; color: #8896b3;
+    padding: 10px 14px;
+    background: #1e2535;
+    border-radius: 8px;
+    line-height: 1.5;
+    border-left: 3px solid #6366f1;
+  }
+  .steps-list li :global(strong) { color: #c8d0e7 }
+  .steps-list li :global(em) { color: #6b7db3 }
   .empty { color: #2d3a56 !important; font-style: italic }
 
   /* Transcript */
