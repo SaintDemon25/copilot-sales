@@ -1,7 +1,11 @@
 <script>
+  import { onMount, onDestroy } from 'svelte'
+  import { checkHealth } from '../lib/api.js'
+
   export let activeView
   export let activeMeeting
 
+  // ---- Agent chips ----
   const agents = [
     { id: 'orchestrator', label: 'Orchestrator', status: 'active' },
     { id: 'prep',         label: 'Prep Agent',   status: 'active' },
@@ -20,12 +24,34 @@
   const statusLabel = { active: 'активен', standby: 'ожидание', idle: 'простой' }
   const statusColor = { active: '#10b981', standby: '#f59e0b', idle: '#4b5a7a' }
 
-  let now = new Date()
-  let timer
-  onMount(() => { timer = setInterval(() => now = new Date(), 1000) })
-  onDestroy(() => clearInterval(timer))
+  // ---- DialogScribe health ----
+  // 'checking' | 'online' | 'offline'
+  let backendStatus = 'checking'
+  let healthTimer
 
-  import { onMount, onDestroy } from 'svelte'
+  async function pollHealth() {
+    backendStatus = 'checking'
+    const ok = await checkHealth()
+    backendStatus = ok ? 'online' : 'offline'
+  }
+
+  const backendColor = { checking: '#f59e0b', online: '#10b981', offline: '#ef4444' }
+  const backendLabel = { checking: 'проверка…', online: 'онлайн', offline: 'недоступен' }
+
+  // ---- Clock ----
+  let now = new Date()
+  let clockTimer
+
+  onMount(() => {
+    clockTimer  = setInterval(() => now = new Date(), 1000)
+    pollHealth()
+    healthTimer = setInterval(pollHealth, 30_000)
+  })
+
+  onDestroy(() => {
+    clearInterval(clockTimer)
+    clearInterval(healthTimer)
+  })
 
   function fmt(d) {
     return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -53,6 +79,26 @@
   </div>
 
   <div class="right">
+    <div
+      class="backend-chip"
+      class:backend-online={backendStatus === 'online'}
+      class:backend-offline={backendStatus === 'offline'}
+      title="DialogScribe API · {import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'}"
+      on:click={pollHealth}
+      role="button"
+      tabindex="0"
+      on:keydown={e => e.key === 'Enter' && pollHealth()}
+    >
+      <span
+        class="dot backend-dot"
+        class:checking={backendStatus === 'checking'}
+        style="background:{backendColor[backendStatus]}"
+      ></span>
+      <span class="backend-label">DialogScribe</span>
+      <span class="backend-status" style="color:{backendColor[backendStatus]}">
+        {backendLabel[backendStatus]}
+      </span>
+    </div>
     <span class="clock">{fmt(now)}</span>
   </div>
 </header>
@@ -121,8 +167,10 @@
   }
 
   .right {
-    min-width: 80px;
-    text-align: right;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
   }
 
   .clock {
@@ -130,5 +178,53 @@
     font-weight: 500;
     color: #4b5a7a;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* DialogScribe health chip */
+  .backend-chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: #1e2535;
+    border: 1px solid #252e42;
+    border-radius: 20px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+  }
+
+  .backend-chip:hover {
+    border-color: #3a4a6a;
+  }
+
+  .backend-chip.backend-online {
+    border-color: rgba(16, 185, 129, 0.4);
+    background: rgba(16, 185, 129, 0.07);
+  }
+
+  .backend-chip.backend-offline {
+    border-color: rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.07);
+  }
+
+  .backend-dot.checking {
+    animation: pulse-dot 1s ease-in-out infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1 }
+    50%       { opacity: 0.3 }
+  }
+
+  .backend-label {
+    color: #8896b3;
+    font-weight: 500;
+  }
+
+  .backend-status {
+    font-weight: 600;
   }
 </style>
