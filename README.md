@@ -33,10 +33,12 @@ Shared Memory (client context + meeting history) is accessible by all agents. Th
   - "Start Meeting" button → transitions to Live Advisor view
 
 ### 🎙️ Live — Live Advisor Agent
-- Real-time transcript stream (simulates `transcribe_stream` via AssemblyAI Streaming)
+- Real-time WebSocket connection to DialogScribe (`/api/live-hints/ws`)
+- Microphone recording via MediaRecorder (stop-start cycling, 6-sec segments)
+- Audio sent as base64 WebM → backend converts to WAV via ffmpeg → Mistral Voxtral ASR
 - Two-tier cascade indicator:
-  - **Fast layer** — GigaChat Lite classifies each fragment (objection / price / neutral)
-  - **Slow layer** — GigaChat Max generates a full contextual tip when a trigger fires
+  - **Fast layer** — local keyword classifier detects triggers (price, objection, competitor)
+  - **Slow layer** — LLM cascade generates contextual tips via WebSocket
 - Contextual tip cards appear on detection of key markers: `цена`, `возражение`, `конкурент`
 - Shared Memory chip showing loaded client profile
 - Elapsed call timer + "End Meeting" → transitions to Post-Meeting view
@@ -63,10 +65,11 @@ The Post-Meeting and Live Advisor screens connect to [DialogScribe](https://gith
 |---|---|---|
 | `GET /health` | `AgentStatusBar` | Backend health polling (every 30 s) |
 | `POST /api/auth/login` | `src/lib/api.js` | Auto-login → JWT token |
+| `WS /api/live-hints/ws` | `LiveAdvisor` | Real-time mic audio → transcript + hints (WebSocket) |
 | `POST /api/transcribe` | `PostMeeting` | Upload audio/video → transcript + diarization |
 | `POST /api/summary` | `PostMeeting` | Generate structured meeting summary |
 | `POST /api/insights` | `PostMeeting` | Extract action items, decisions, insights |
-| `POST /api/chat` | `LiveAdvisor` | Real-time advisor tip per trigger fragment |
+| `POST /api/chat` | `LiveAdvisor` | Fallback advisor tip endpoint |
 
 ### Authentication
 
@@ -114,17 +117,17 @@ The `dialogscribe` service exposes only port 7860 on the internal `app-net` netw
 
 ```bash
 npm install
-cp .env.example .env
-# Set VITE_API_BASE_URL=http://localhost:7860 and ensure DialogScribe is running
+# Leave VITE_API_BASE_URL empty in .env — Vite proxy handles forwarding
+echo "VITE_API_BASE_URL=" > .env
 npm run dev
 ```
 
-In this mode the frontend talks directly to DialogScribe on port 7860. DialogScribe must have CORS enabled or be proxied separately.
+In this mode Vite dev server proxies all `/api/*`, `/health`, `/v1/*` requests (including WebSocket) to DialogScribe on `localhost:7860`. Start DialogScribe separately via `docker compose -f docker-compose.dev.yaml up -d`.
 
 ### Fallback behaviour
 
 Both live components degrade gracefully when the backend is offline:
-- **Live Advisor** — shows a warning chip with the detected trigger keyword; does not block the transcript stream
+- **Live Advisor** — shows connection error with retry button; does not block the UI
 - **Post-Meeting** — "Демо-режим" button runs the full UI flow with mock data so the demo never breaks
 
 ---
