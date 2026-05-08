@@ -190,11 +190,31 @@
 
   // ---- Copy helper ----
   function copyToClipboard(text, label) {
-    navigator.clipboard.writeText(text).then(() => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        toast(`${label} скопировано`, 'success')
+      }).catch(() => {
+        fallbackCopy(text, label)
+      })
+    } else {
+      fallbackCopy(text, label)
+    }
+  }
+
+  function fallbackCopy(text, label) {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
       toast(`${label} скопировано`, 'success')
-    }).catch(() => {
+    } catch {
       toast('Не удалось скопировать', 'error')
-    })
+    }
+    document.body.removeChild(textarea)
   }
 
   function fmtDuration(s) {
