@@ -134,7 +134,12 @@ function flushLoopbackChunk() {
 }
 
 ipcMain.handle('start-system-audio', async () => {
-  if (loopbackProc) return true  // already running
+  if (loopbackProc) {
+    try { loopbackProc.kill() } catch { /* ignore */ }
+    loopbackProc = null
+    loopbackChunkBuf = []
+    loopbackChunkSize = 0
+  }
 
   const exePath = path.join(__dirname, 'wasapi_loopback.exe')
   if (!fs.existsSync(exePath)) {
@@ -225,17 +230,8 @@ function flushMicChunk() {
   micChunkBuf = []
   micChunkSize = 0
 
-  // Convert mono s16le → stereo s16le by duplicating channel (backend expects stereo)
-  const stereoData = Buffer.alloc(pcmData.length * 2)
-  for (let i = 0; i < pcmData.length; i += 2) {
-    stereoData[i] = pcmData[i]
-    stereoData[i + 1] = pcmData[i + 1]
-    stereoData[i + 2] = pcmData[i]
-    stereoData[i + 3] = pcmData[i + 1]
-  }
-
-  const wavHeader = makeWavHeader(stereoData.length, MIC_SAMPLE_RATE, 2, 16)
-  const wavBuf = Buffer.concat([wavHeader, stereoData])
+  const wavHeader = makeWavHeader(pcmData.length, MIC_SAMPLE_RATE, MIC_CHANNELS, 16)
+  const wavBuf = Buffer.concat([wavHeader, pcmData])
   const b64 = wavBuf.toString('base64')
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('mic-audio-chunk', b64)
@@ -243,7 +239,12 @@ function flushMicChunk() {
 }
 
 ipcMain.handle('start-mic', async () => {
-  if (micProc) return true
+  if (micProc) {
+    try { micProc.kill() } catch { /* ignore */ }
+    micProc = null
+    micChunkBuf = []
+    micChunkSize = 0
+  }
 
   const exePath = path.join(__dirname, 'wasapi_mic.exe')
   if (!fs.existsSync(exePath)) {
@@ -252,7 +253,7 @@ ipcMain.handle('start-mic', async () => {
   }
 
   try {
-    micProc = spawn(exePath, [], {
+    micProc = spawn(exePath, ['NVIDIA Broadcast'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -313,9 +314,14 @@ ipcMain.handle('stop-mic', async () => {
 // ---------------------------------------------------------------------------
 
 app.whenReady().then(async () => {
-  const port = await startServer()
   createWindow()
-  mainWindow.loadURL(`http://127.0.0.1:${port}`)
+  const viteDevUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173'
+  if (process.argv.includes('--vite') || process.env.ELECTRON_DEV === '1') {
+    mainWindow.loadURL(viteDevUrl)
+  } else {
+    const port = await startServer()
+    mainWindow.loadURL(`http://127.0.0.1:${port}`)
+  }
 })
 
 app.on('window-all-closed', () => {
