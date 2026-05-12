@@ -81,6 +81,13 @@ function createWindow() {
 let loopbackProc = null
 let loopbackChunkBuf = []
 let loopbackChunkSize = 0
+
+// ---------------------------------------------------------------------------
+// WASAPI Microphone Capture
+// ---------------------------------------------------------------------------
+let micProc = null
+let micChunkBuf = []
+let micChunkSize = 0
 const LOOPBACK_CHUNK_DURATION_MS = 6000  // 6 seconds per chunk
 const LOOPBACK_SAMPLE_RATE = 48000
 const LOOPBACK_CHANNELS = 2
@@ -201,6 +208,104 @@ ipcMain.handle('stop-system-audio', async () => {
 
   // Flush any remaining audio
   flushLoopbackChunk()
+})
+
+// ---------------------------------------------------------------------------
+// WASAPI Microphone Capture IPC
+// ---------------------------------------------------------------------------
+const MIC_SAMPLE_RATE = 48000
+const MIC_CHANNELS = 1
+const MIC_BYTES_PER_SAMPLE = 2
+const MIC_BYTES_PER_SEC = MIC_SAMPLE_RATE * MIC_CHANNELS * MIC_BYTES_PER_SAMPLE
+const MIC_CHUNK_BYTES = MIC_BYTES_PER_SEC * (LOOPBACK_CHUNK_DURATION_MS / 1000)
+
+function flushMicChunk() {
+  if (micChunkBuf.length === 0) return
+  const pcmData = Buffer.concat(micChunkBuf)
+  micChunkBuf = []
+  micChunkSize = 0
+
+  // Convert mono s16le → stereo s16le by duplicating channel (backend expects stereo)
+  const stereoData = Buffer.alloc(pcmData.length * 2)
+  for (let i = 0; i < pcmData.length; i += 2) {
+    stereoData[i] = pcmData[i]
+    stereoData[i + 1] = pcmData[i + 1]
+    stereoData[i + 2] = pcmData[i]
+    stereoData[i + 3] = pcmData[i + 1]
+  }
+
+  const wavHeader = makeWavHeader(stereoData.length, MIC_SAMPLE_RATE, 2, 16)
+  const wavBuf = Buffer.concat([wavHeader, stereoData])
+  const b64 = wavBuf.toString('base64')
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('mic-audio-chunk', b64)
+  }
+}
+
+ipcMain.handle('start-mic', async () => {
+  if (micProc) return true
+
+  const exePath = path.join(__dirname, 'wasapi_mic.exe')
+  if (!fs.existsSync(exePath)) {
+    console.error('wasapi_mic.exe not found at', exePath)
+    return false
+  }
+
+  try {
+    micProc = spawn(exePath, [], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+
+    micChunkBuf = []
+    micChunkSize = 0
+
+    micProc.stdout.on('data', (chunk) => {
+      micChunkBuf.push(chunk)
+      micChunkSize += chunk.length
+
+      if (micChunkSize >= MIC_CHUNK_BYTES) {
+        flushMicChunk()
+      }
+    })
+
+    micProc.stderr.on('data', (data) => {
+      const msg = data.toString().trim()
+      console.log('[wasapi_mic]', msg)
+    })
+
+    micProc.on('close', (code) => {
+      console.log('[wasapi_mic] exited with code', code)
+      flushMicChunk()
+      micProc = null
+    })
+
+    micProc.on('error', (err) => {
+      console.error('[wasapi_mic] error:', err.message)
+      micProc = null
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 500))
+    return micProc !== null
+  } catch (e) {
+    console.error('Failed to start wasapi_mic:', e.message)
+    micProc = null
+    return false
+  }
+})
+
+ipcMain.handle('stop-mic', async () => {
+  if (!micProc) return
+  try {
+    micProc.stdin.write('STOP\n')
+    micProc.stdin.end()
+  } catch { /* ignore */ }
+  await new Promise(resolve => setTimeout(resolve, 300))
+  if (micProc) {
+    try { micProc.kill() } catch { /* ignore */ }
+    micProc = null
+  }
+  flushMicChunk()
 })
 
 // ---------------------------------------------------------------------------

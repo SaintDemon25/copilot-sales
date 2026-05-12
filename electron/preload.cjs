@@ -14,4 +14,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeSystemAudioListener: () => {
     ipcRenderer.removeAllListeners('system-audio-chunk')
   },
+
+  // Native WASAPI microphone capture
+  startMic: () => ipcRenderer.invoke('start-mic'),
+  stopMic: () => ipcRenderer.invoke('stop-mic'),
+  onMicAudioChunk: (callback) => {
+    ipcRenderer.on('mic-audio-chunk', (_event, data) => callback(data))
+  },
+  removeMicListener: () => {
+    ipcRenderer.removeAllListeners('mic-audio-chunk')
+  },
 })

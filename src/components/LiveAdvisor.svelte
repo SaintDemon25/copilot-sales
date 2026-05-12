@@ -146,16 +146,19 @@
       wsConnected = true
       wsConnecting = false
 
-      // Start mic recording — segments are sent automatically via callback
+      // Start mic recording — native WASAPI in Electron, getUserMedia in browser
       mic = createMicRecorder({
         onSegment(base64Audio) {
           if (liveConnection && !stopped && !isPaused) {
             liveConnection.sendAudio(base64Audio, 'mic')
           }
         },
-        segmentIntervalMs: 6000,
       })
-      await mic.start()
+      const micOk = await mic.start()
+      if (!micOk) {
+        toast('Не удалось запустить микрофон', 'error')
+        throw new Error('Mic capture failed')
+      }
       isRecording = true
       dispatch('recordingChange', { isRecording: true })
       toast('Запись начата', 'success')

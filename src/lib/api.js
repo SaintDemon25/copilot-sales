@@ -344,21 +344,69 @@ export async function connectLiveHints({ onTranscript, onHint, onStatus, onError
 }
 
 /**
- * Microphone recorder using stop-start cycling.
+ * Microphone recorder.
  *
- * Each cycle produces a COMPLETE, valid WebM file (with proper headers).
- * This avoids the issue where MediaRecorder timeslice mode produces
- * continuation fragments that ASR services can't decode.
+ * In Electron: uses native WASAPI capture via IPC (bypasses Chromium USB audio bug).
+ * In browser: uses getUserMedia with stop-start cycling.
  *
  * @param {{ onSegment: (base64: string) => void, segmentIntervalMs?: number }} opts
- * @returns {Promise<{ start: () => void, stop: () => void }>}
+ * @returns {Promise<{ start: () => Promise<boolean>, stop: () => void }>}
  */
-export function createMicRecorder({ onSegment, segmentIntervalMs = 6000 }) {
-  return createStopStartRecorder({
-    getStream: () => navigator.mediaDevices.getUserMedia({ audio: true }),
-    onSegment,
-    segmentIntervalMs,
-  })
+export function createMicRecorder({ onSegment }) {
+  // Electron native WASAPI mic capture
+  if (_win.electronAPI?.startMic) {
+    let listening = false
+    return {
+      async start() {
+        try {
+          const ok = await _win.electronAPI.startMic()
+          if (!ok) {
+            console.warn('WASAPI mic capture failed to start, falling back')
+            return false
+          }
+          listening = true
+          _win.electronAPI.onMicAudioChunk((b64Wav) => {
+            if (listening && b64Wav) {
+              onSegment(b64Wav)
+            }
+          })
+          return true
+        } catch (e) {
+          console.warn('Native mic capture failed:', e.message)
+          return false
+        }
+      },
+      stop() {
+        listening = false
+        if (_win.electronAPI?.stopMic) _win.electronAPI.stopMic()
+        if (_win.electronAPI?.removeMicListener) _win.electronAPI.removeMicListener()
+      },
+    }
+  }
+
+  // Browser fallback: getUserMedia
+  return createMicRecorderBrowser({ onSegment })
+}
+
+/**
+ * Browser fallback for mic recorder using getUserMedia stop-start cycling.
+ */
+function createMicRecorderBrowser({ onSegment, segmentIntervalMs = 6000 }) {
+  let inner = null
+  return {
+    async start() {
+      inner = createStopStartRecorder({
+        getStream: () => navigator.mediaDevices.getUserMedia({ audio: true }),
+        onSegment,
+        segmentIntervalMs,
+      })
+      await inner.start()
+      return true
+    },
+    stop() {
+      if (inner) inner.stop()
+    },
+  }
 }
 
 /**
@@ -458,23 +506,41 @@ function createBrowserSystemAudioRecorder({ onSegment, segmentIntervalMs = 6000 
 /**
  * Shared stop-start recorder implementation.
  * Cycles: start MediaRecorder → wait N sec → stop → collect complete WebM → callback → restart.
+ *
+ * Uses setTimeout per-segment instead of setInterval to avoid race conditions
+ * between the timer and the async onstop handler.
  */
 function createStopStartRecorder({ getStream, onSegment, segmentIntervalMs = 6000 }) {
   let stream = null
   let recorder = null
-  let cycleTimer = null
+  let stopTimer = null
   let stopped = false
 
-  async function startSegment() {
+  function startSegment() {
     if (stopped || !stream) return
-    recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
+
+    try {
+      recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
+    } catch (e) {
+      console.error('[recorder] MediaRecorder creation failed:', e)
+      if (!stopped) stopTimer = setTimeout(startSegment, 1000)
+      return
+    }
     const segChunks = []
 
     recorder.ondataavailable = (e) => {
       if (e.data.size > 0) segChunks.push(e.data)
     }
 
+    recorder.onerror = (e) => {
+      console.error('[recorder] MediaRecorder error:', e.error || e)
+      if (!stopped) stopTimer = setTimeout(startSegment, 1500)
+    }
+
     recorder.onstop = () => {
+      // Clear the stop timer (it already fired, but just in case)
+      if (stopTimer) { clearTimeout(stopTimer); stopTimer = null }
+
       if (segChunks.length > 0 && !stopped) {
         const blob = new Blob(segChunks, { type: 'audio/webm;codecs=opus' })
         const reader = new FileReader()
@@ -484,27 +550,35 @@ function createStopStartRecorder({ getStream, onSegment, segmentIntervalMs = 600
         }
         reader.readAsDataURL(blob)
       }
+      // Restart cycle — setTimeout starts fresh, no race with previous timer
       if (!stopped) startSegment()
     }
 
-    recorder.start()
+    try {
+      recorder.start()
+      // Schedule stop for this segment after the interval
+      stopTimer = setTimeout(() => {
+        stopTimer = null
+        if (recorder && recorder.state === 'recording') {
+          recorder.stop()
+        }
+      }, segmentIntervalMs)
+    } catch (e) {
+      console.error('[recorder] recorder.start() failed:', e)
+      if (!stopped) stopTimer = setTimeout(startSegment, 1000)
+    }
   }
 
   return {
     async start() {
       stopped = false
       stream = await getStream()
-      await startSegment()
-      cycleTimer = setInterval(() => {
-        if (recorder && recorder.state === 'recording') {
-          recorder.stop()
-        }
-      }, segmentIntervalMs)
+      startSegment()
     },
 
     stop() {
       stopped = true
-      if (cycleTimer) { clearInterval(cycleTimer); cycleTimer = null }
+      if (stopTimer) { clearTimeout(stopTimer); stopTimer = null }
       if (recorder && recorder.state === 'recording') {
         recorder.stop()
       }
