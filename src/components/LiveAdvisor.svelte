@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher, onMount, onDestroy } from 'svelte'
+  import { createEventDispatcher, onMount, onDestroy, tick } from 'svelte'
   import { connectLiveHints, createMicRecorder, createSystemAudioRecorder } from '../lib/api.js'
 
   const dispatch = createEventDispatcher()
@@ -16,6 +16,7 @@
   let wsConnecting = false
   let wsError = ''
   let isRecording = false
+  let isPaused = false
   let mic
   let systemAudio
   let hasSystemAudio = false
@@ -23,6 +24,13 @@
   // ---- Live connection ----
   let liveConnection = null
   let stopped = false
+
+  // ---- Confirmation modal ----
+  let showEndConfirm = false
+
+  // ---- Auto-scroll ----
+  let transcriptScrollEl
+  let userScrolledUp = false
 
   // ---- Timers ----
   let elapsedTimer
@@ -42,10 +50,34 @@
   const typeColors = { question: '#3b82f6', price: '#f59e0b', competitor: '#ef4444', objection: '#a855f7', argumentative: '#a855f7', navigational: '#3b82f6', tactical: '#10b981', strategic: '#6366f1', warning: '#ef4444', analytical: '#f59e0b' }
   const typeLabels = { question: 'Вопрос', price: 'Цена', competitor: 'Конкурент', objection: 'Возражение', argumentative: 'Аргумент', navigational: 'Навигация', tactical: 'Тактика', strategic: 'Стратегия', warning: 'Предупреждение', analytical: 'Аналитика' }
 
+  // ---- Auto-scroll logic ----
+  async function scrollToBottom() {
+    if (userScrolledUp || !transcriptScrollEl) return
+    await tick()
+    transcriptScrollEl.scrollTop = transcriptScrollEl.scrollHeight
+  }
+
+  function handleScroll() {
+    if (!transcriptScrollEl) return
+    const atBottom = transcriptScrollEl.scrollHeight - transcriptScrollEl.scrollTop - transcriptScrollEl.clientHeight < 60
+    userScrolledUp = !atBottom
+  }
+
+  function scrollToLatest() {
+    userScrolledUp = false
+    scrollToBottom()
+  }
+
+  // ---- Toast helper ----
+  function toast(message, type = 'info') {
+    dispatch('toast', { message, type })
+  }
+
   async function startLiveSession() {
     wsConnecting = true
     wsError = ''
     stopped = false
+    isPaused = false
 
     try {
       liveConnection = await connectLiveHints({
@@ -57,11 +89,11 @@
 
           displayedLines = [...displayedLines, { speaker, text }]
           transcriptText += `${prefix} ${text}\n`
+          scrollToBottom()
 
           // Local fast layer trigger detection
           const trigger = detectTrigger(text)
           if (trigger) {
-            // Add a local trigger indicator card
             advisorCards = [{
               type: trigger,
               title: typeLabels[trigger],
@@ -73,7 +105,6 @@
           }
         },
         onHint(msg) {
-          // Replace loading cards or add new hint
           advisorCards = [{
             type: msg.hint_type || 'argumentative',
             title: typeLabels[msg.hint_type] || msg.hint_type || 'Совет',
@@ -87,17 +118,22 @@
           if (msg.status === 'ready') {
             wsConnected = true
             wsConnecting = false
+            toast('WebSocket подключен', 'success')
           } else if (msg.status === 'processing') {
             // Server is busy processing previous chunk
           } else if (msg.status === 'silent_chunk') {
             // No speech detected in chunk
           } else if (msg.status === 'disconnected') {
             wsConnected = false
+            if (!stopped) {
+              toast('Соединение потеряно', 'error')
+            }
           }
         },
         onError(msg) {
           wsError = msg.message || 'WebSocket error'
           wsConnecting = false
+          toast(wsError, 'error')
         },
       })
 
@@ -110,22 +146,28 @@
       wsConnected = true
       wsConnecting = false
 
-      // Start mic recording — segments are sent automatically via callback
+      // Start mic recording — native WASAPI in Electron, getUserMedia in browser
       mic = createMicRecorder({
         onSegment(base64Audio) {
-          if (liveConnection && !stopped) {
+          if (liveConnection && !stopped && !isPaused) {
             liveConnection.sendAudio(base64Audio, 'mic')
           }
         },
-        segmentIntervalMs: 6000,
       })
-      await mic.start()
+      const micOk = await mic.start()
+      if (!micOk) {
+        toast('Не удалось запустить микрофон', 'error')
+        throw new Error('Mic capture failed')
+      }
       isRecording = true
+      dispatch('recordingChange', { isRecording: true })
+      toast('Запись начата', 'success')
 
     } catch (e) {
       wsError = e.message || 'Connection failed'
       wsConnecting = false
       wsConnected = false
+      toast(wsError, 'error')
     }
   }
 
@@ -133,28 +175,59 @@
     if (systemAudio || !liveConnection) return
     systemAudio = createSystemAudioRecorder({
       onSegment(base64Audio) {
-        if (liveConnection && !stopped) {
+        if (liveConnection && !stopped && !isPaused) {
           liveConnection.sendAudio(base64Audio, 'tab')
         }
       },
       segmentIntervalMs: 6000,
     })
     hasSystemAudio = await systemAudio.start()
+    if (hasSystemAudio) {
+      toast('Захват системного звука включён', 'success')
+    } else {
+      toast('Не удалось захватить системный звук', 'warning')
+    }
+  }
+
+  function togglePause() {
+    isPaused = !isPaused
+    if (isPaused) {
+      toast('Запись на паузе', 'warning')
+    } else {
+      toast('Запись продолжена', 'success')
+    }
+  }
+
+  function requestEndMeeting() {
+    showEndConfirm = true
+  }
+
+  function cancelEndMeeting() {
+    showEndConfirm = false
+  }
+
+  function confirmEndMeeting() {
+    showEndConfirm = false
+    stopLiveSession()
   }
 
   function stopLiveSession() {
     isRecording = false
+    isPaused = false
     stopped = true
     hasSystemAudio = false
     if (liveConnection) { liveConnection.close(); liveConnection = null }
     if (mic) { mic.stop(); mic = null }
     if (systemAudio) { systemAudio.stop(); systemAudio = null }
     wsConnected = false
+    dispatch('recordingChange', { isRecording: false })
     dispatch('endMeeting', { transcript: transcriptText, displayedLines, elapsed })
   }
 
   onMount(() => {
-    elapsedTimer = setInterval(() => elapsed++, 1000)
+    elapsedTimer = setInterval(() => {
+      if (!isPaused && isRecording) elapsed++
+    }, 1000)
     // Auto-start only if a meeting is selected
     if (meeting) {
       startLiveSession()
@@ -174,12 +247,6 @@
     const sec = (s % 60).toString().padStart(2, '0')
     return `${m}:${sec}`
   }
-
-  // Remove "fresh" flag after animation
-  $: {
-    // noop — reactivity trigger for advisorCards
-    void advisorCards
-  }
 </script>
 
 <div class="live-layout">
@@ -187,24 +254,34 @@
   <div class="transcript-panel">
     <div class="panel-head">
       <div class="live-indicator">
-        {#if wsConnected}
+        {#if wsConnected && !isPaused}
           <span class="live-dot"></span> В ЭФИРЕ
+        {:else if isPaused}
+          <span class="live-dot paused"></span> ПАУЗА
         {:else if wsConnecting}
           <span class="live-dot connecting"></span> ПОДКЛЮЧЕНИЕ...
         {:else}
           <span class="live-dot offline"></span> ОФЛАЙН
         {/if}
       </div>
-      <div class="elapsed">{fmtElapsed(elapsed)}</div>
-      {#if wsConnected || isRecording}
-        <button class="end-btn" on:click={stopLiveSession}>
-          ⏹ Завершить
-        </button>
-      {:else}
-        <button class="start-btn" on:click={startLiveSession} disabled={wsConnecting || !meeting}>
-          {wsConnecting ? 'Подключение...' : '▶ Начать'}
-        </button>
-      {/if}
+
+      <!-- Large timer -->
+      <div class="elapsed-timer" class:paused={isPaused}>{fmtElapsed(elapsed)}</div>
+
+      <div class="head-actions">
+        {#if wsConnected || isRecording}
+          <button class="pause-btn" on:click={togglePause} disabled={!isRecording}>
+            {isPaused ? '▶ Продолжить' : '⏸ Пауза'}
+          </button>
+          <button class="end-btn" on:click={requestEndMeeting}>
+            ⏹ Завершить
+          </button>
+        {:else}
+          <button class="start-btn" on:click={startLiveSession} disabled={wsConnecting || !meeting}>
+            {wsConnecting ? 'Подключение...' : '▶ Начать'}
+          </button>
+        {/if}
+      </div>
     </div>
 
     <div class="meeting-meta-bar">
@@ -213,14 +290,22 @@
       <span>{meeting?.contact ?? ''}</span>
     </div>
 
+    <!-- WS disconnect banner -->
     {#if wsError}
-      <div class="ws-error">
-        ⚠️ {wsError}
-        <button class="retry-btn" on:click={startLiveSession}>Повторить</button>
+      <div class="ws-error-banner">
+        <span>⚠️ {wsError}</span>
+        <button class="retry-btn" on:click={startLiveSession}>Переподключить</button>
       </div>
     {/if}
 
-    <div class="transcript-scroll">
+    <!-- System audio enable (prominent) -->
+    {#if isRecording && !hasSystemAudio && !isPaused}
+      <button class="sys-audio-prominent" on:click={enableSystemAudio}>
+        🔊 Включить звук собеседника (WASAPI)
+      </button>
+    {/if}
+
+    <div class="transcript-scroll" bind:this={transcriptScrollEl} on:scroll={handleScroll}>
       {#each displayedLines as line}
         <div class="line" class:manager={line.speaker === 'Менеджер'}>
           <span class="speaker">{line.speaker}</span>
@@ -242,13 +327,20 @@
             <span class="listening-label">Нажмите «Начать» для подключения</span>
           {/if}
         </div>
-      {:else if wsConnected}
+      {:else if wsConnected && !isPaused}
         <div class="listening">
           <span class="wave"></span><span class="wave"></span><span class="wave"></span>
           <span class="listening-label">Слушаю…</span>
         </div>
       {/if}
     </div>
+
+    <!-- Scroll to bottom button -->
+    {#if userScrolledUp && displayedLines.length > 0}
+      <button class="scroll-bottom-btn" on:click={scrollToLatest}>
+        ↓ К последним репликам
+      </button>
+    {/if}
 
     <div class="audio-bar">
       <div class="audio-label">
@@ -258,13 +350,8 @@
           🎤 Микрофон
         {/if}
       </div>
-      {#if isRecording && !hasSystemAudio}
-        <button class="sys-audio-btn" on:click={enableSystemAudio}>
-          🔊 Включить звук собеседника
-        </button>
-      {/if}
       {#if isRecording}
-        <div class="audio-vis">
+        <div class="audio-vis" class:vis-paused={isPaused}>
           {#each Array(18) as _, i}
             <div class="bar" style="animation-delay:{i * 0.07}s"></div>
           {/each}
@@ -295,9 +382,14 @@
       </div>
     </div>
 
+    <!-- Honest Shared Memory chip -->
     <div class="memory-chip">
       <span>🧠 Shared Memory:</span>
-      <span class="memory-val">Профиль {meeting?.client ?? '—'} загружен</span>
+      {#if meeting}
+        <span class="memory-val loaded">Профиль «{meeting.client}» загружен</span>
+      {:else}
+        <span class="memory-empty">Не загружен — выберите встречу</span>
+      {/if}
     </div>
 
     {#if advisorCards.length === 0}
@@ -350,6 +442,30 @@
   </div>
 </div>
 
+<!-- End meeting confirmation modal -->
+<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+{#if showEndConfirm}
+  <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+  <div class="modal-overlay" on:click={cancelEndMeeting}>
+    <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+    <div class="modal" on:click|stopPropagation>
+      <div class="modal-icon">⏹</div>
+      <h3 class="modal-title">Завершить звонок?</h3>
+      <p class="modal-text">
+        {#if displayedLines.length > 0}
+          Транскрипт ({displayedLines.length} реплик, {fmtElapsed(elapsed)}) будет сохранён для анализа.
+        {:else}
+          Транскрипт пуст — данных для анализа не будет.
+        {/if}
+      </p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" on:click={cancelEndMeeting}>Отмена</button>
+        <button class="btn btn-danger" on:click={confirmEndMeeting}>Завершить</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .live-layout {
     display: grid;
@@ -385,6 +501,7 @@
     font-weight: 700;
     color: #ef4444;
     letter-spacing: 0.5px;
+    flex-shrink: 0;
   }
 
   .live-dot {
@@ -395,19 +512,44 @@
   }
   .live-dot.connecting { background: #f59e0b }
   .live-dot.offline { background: #4b5a7a; animation: none }
+  .live-dot.paused { background: #f59e0b; animation: none }
 
   @keyframes pulse {
     0%, 100% { opacity: 1; transform: scale(1) }
     50%       { opacity: 0.5; transform: scale(0.8) }
   }
 
-  .elapsed {
-    font-size: 14px;
+  .elapsed-timer {
+    font-size: 28px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    color: #c8d0e7;
+    color: #e8eaed;
     flex: 1;
+    text-align: center;
+    letter-spacing: 2px;
+    line-height: 1;
   }
+  .elapsed-timer.paused { color: #f59e0b }
+
+  .head-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .pause-btn {
+    padding: 6px 12px;
+    background: rgba(245, 158, 11, 0.15);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    color: #fbbf24;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .pause-btn:hover { background: rgba(245, 158, 11, 0.25) }
+  .pause-btn:disabled { opacity: 0.4; cursor: not-allowed }
 
   .end-btn {
     padding: 6px 14px;
@@ -447,7 +589,7 @@
   }
   .meeting-meta-bar strong { color: #6b7db3 }
 
-  .ws-error {
+  .ws-error-banner {
     padding: 10px 20px;
     background: rgba(239,68,68,0.08);
     border-bottom: 1px solid rgba(239,68,68,0.2);
@@ -457,6 +599,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    flex-shrink: 0;
   }
   .retry-btn {
     padding: 3px 10px;
@@ -467,6 +610,21 @@
     font-size: 11px;
     cursor: pointer;
   }
+
+  .sys-audio-prominent {
+    padding: 10px 20px;
+    background: rgba(59,130,246,0.08);
+    border: none;
+    border-bottom: 1px solid rgba(59,130,246,0.2);
+    color: #60a5fa;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .sys-audio-prominent:hover { background: rgba(59,130,246,0.15) }
 
   .transcript-scroll {
     flex: 1;
@@ -542,6 +700,23 @@
     40%           { transform: scale(1) }
   }
 
+  .scroll-bottom-btn {
+    position: absolute;
+    bottom: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 14px;
+    background: rgba(59,130,246,0.2);
+    border: 1px solid rgba(59,130,246,0.3);
+    color: #60a5fa;
+    border-radius: 20px;
+    font-size: 12px;
+    cursor: pointer;
+    z-index: 10;
+    transition: all 0.15s;
+  }
+  .scroll-bottom-btn:hover { background: rgba(59,130,246,0.3) }
+
   .audio-bar {
     display: flex;
     align-items: center;
@@ -551,19 +726,8 @@
     flex-shrink: 0;
   }
   .audio-label { font-size: 11px; color: #4b5a7a; white-space: nowrap }
-  .sys-audio-btn {
-    padding: 4px 10px;
-    background: rgba(59,130,246,0.15);
-    border: 1px solid rgba(59,130,246,0.3);
-    color: #60a5fa;
-    border-radius: 6px;
-    font-size: 11px;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: all 0.15s;
-  }
-  .sys-audio-btn:hover { background: rgba(59,130,246,0.25) }
   .audio-vis { display: flex; align-items: center; gap: 2px; flex: 1 }
+  .audio-vis.vis-paused .bar { animation-play-state: paused; opacity: 0.3 }
   .bar {
     width: 3px;
     background: #3b82f6;
@@ -608,6 +772,7 @@
     flex-shrink: 0;
   }
   .memory-val { color: #10b981; font-weight: 500 }
+  .memory-empty { color: #4b5a7a; font-style: italic }
 
   .waiting-tips {
     flex: 1;
@@ -676,4 +841,56 @@
   .cascade-label { color: #4b5a7a }
   .cascade-status { color: #2d3a56; font-weight: 500; transition: color 0.3s }
   .cascade-status.active { color: #10b981 }
+
+  /* Confirmation modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.15s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+
+  .modal {
+    background: #161b27;
+    border: 1px solid #252e42;
+    border-radius: 16px;
+    padding: 28px 32px;
+    max-width: 380px;
+    text-align: center;
+    animation: modalIn 0.2s ease;
+  }
+  @keyframes modalIn { from { transform: scale(0.95); opacity: 0 } to { transform: scale(1); opacity: 1 } }
+
+  .modal-icon { font-size: 36px; margin-bottom: 12px }
+  .modal-title { font-size: 18px; font-weight: 600; color: #e8eaed; margin-bottom: 8px }
+  .modal-text { font-size: 13px; color: #8896b3; line-height: 1.5; margin-bottom: 20px }
+
+  .modal-actions { display: flex; gap: 10px; justify-content: center }
+
+  .btn {
+    padding: 8px 20px;
+    border-radius: 8px;
+    border: none;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-secondary {
+    background: #1e2535;
+    color: #c8d0e7;
+    border: 1px solid #252e42;
+  }
+  .btn-secondary:hover { background: #252e42 }
+  .btn-danger {
+    background: rgba(239,68,68,0.2);
+    color: #f87171;
+    border: 1px solid rgba(239,68,68,0.3);
+  }
+  .btn-danger:hover { background: rgba(239,68,68,0.3) }
 </style>

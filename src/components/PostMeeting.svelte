@@ -62,8 +62,8 @@
 
       summaryText = summaryData?.summary ?? summaryData?.text ?? String(summaryData)
       actionItems = normaliseActionItems(insightsData?.action_items ?? summaryData?.action_items ?? [])
-      decisions   = insightsData?.decisions ?? summaryData?.decisions ?? []
-      insights    = insightsData?.insights  ?? []
+      decisions   = normaliseDecisions(insightsData?.decisions ?? summaryData?.decisions ?? [])
+      insights    = normaliseInsights(insightsData?.suggested_steps ?? insightsData?.insights ?? [])
 
       phase = 'done'
     } catch (e) {
@@ -86,8 +86,8 @@
 
       summaryText = summaryData?.summary ?? summaryData?.text ?? String(summaryData)
       actionItems = normaliseActionItems(insightsData?.action_items ?? summaryData?.action_items ?? [])
-      decisions   = insightsData?.decisions ?? summaryData?.decisions ?? []
-      insights    = insightsData?.insights  ?? []
+      decisions   = normaliseDecisions(insightsData?.decisions ?? summaryData?.decisions ?? [])
+      insights    = normaliseInsights(insightsData?.suggested_steps ?? insightsData?.insights ?? [])
 
       phase = 'done'
     } catch (e) {
@@ -122,9 +122,99 @@
         task:     item.task ?? item.text ?? item.description ?? String(item),
         owner:    item.owner ?? item.assignee ?? 'Менеджер',
         priority: item.priority ?? 'medium',
+        deadline: item.deadline ?? null,
         done:     false,
       }
     })
+  }
+
+  // Normalise decisions: string[] or {decision, context}[]
+  function normaliseDecisions(raw) {
+    if (!Array.isArray(raw)) return []
+    return raw.map(item => {
+      if (typeof item === 'string') return item
+      return item.decision ?? item.text ?? item.description ?? String(item)
+    })
+  }
+
+  // Normalise insights/steps: extract suggested_steps or insights
+  function normaliseInsights(raw) {
+    if (!Array.isArray(raw)) return []
+    return raw.map(item => {
+      if (typeof item === 'string') return item
+      // suggested_steps format: {step, reason, category}
+      if (item.step) return `${item.step}${item.reason ? ' — ' + item.reason : ''}`
+      if (item.insight) return item.insight
+      return item.text ?? String(item)
+    })
+  }
+
+  // ---- Toast helper ----
+  function toast(message, type = 'info') {
+    dispatch('toast', { message, type })
+  }
+
+  // ---- Simple markdown renderer ----
+  function renderMarkdown(md) {
+    if (!md) return ''
+    return md
+      // Escape HTML entities
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      // Headers: ### → <h3>, ## → <h2>, # → <h1>
+      .replace(/^### (.+)$/gm, '<h4 class="md-h">$1</h4>')
+      .replace(/^## (.+)$/gm, '<h3 class="md-h">$1</h3>')
+      .replace(/^# (.+)$/gm, '<h2 class="md-h">$1</h2>')
+      // Bold: **text** or __text__
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/__(.+?)__/g, '<strong>$1</strong>')
+      // Italic: *text* or _text_
+      .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+      .replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>')
+      // Unordered lists: - item or * item
+      .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+      // Ordered lists: 1. item
+      .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+      // Wrap consecutive <li> in <ul>
+      .replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul class="md-list">$1</ul>')
+      // Line breaks → paragraphs (double newline)
+      .replace(/\n{2,}/g, '</p><p>')
+      // Single newlines within paragraphs
+      .replace(/\n/g, '<br>')
+      // Wrap in paragraph
+      .replace(/^(.+)$/, '<p>$1</p>')
+      // Clean up empty paragraphs
+      .replace(/<p>\s*<\/p>/g, '')
+  }
+
+  // ---- Copy helper ----
+  function copyToClipboard(text, label) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        toast(`${label} скопировано`, 'success')
+      }).catch(() => {
+        fallbackCopy(text, label)
+      })
+    } else {
+      fallbackCopy(text, label)
+    }
+  }
+
+  function fallbackCopy(text, label) {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+      toast(`${label} скопировано`, 'success')
+    } catch {
+      toast('Не удалось скопировать', 'error')
+    }
+    document.body.removeChild(textarea)
   }
 
   function fmtDuration(s) {
@@ -245,6 +335,9 @@
       <div class="post-heading">Итоги встречи</div>
       <div class="post-sub">{meeting?.client ?? '—'} · {meeting?.contact ?? ''}</div>
     </div>
+    {#if hasLiveTranscript && liveDuration > 0}
+      <div class="duration-badge">⏱ {fmtDuration(liveDuration)}</div>
+    {/if}
     {#if phase === 'done'}
       <button class="export-btn" on:click={exportTxt}>⬇ Экспорт TXT</button>
     {/if}
@@ -292,31 +385,45 @@
 
   <!-- Processing -->
   {:else if phase !== 'done' && phase !== 'error'}
-    <div class="processing-state">
-      <div class="proc-spinner"></div>
-      <p class="proc-phase">{phaseLabel[phase]}</p>
+    <div class="processing-layout">
+      <div class="processing-state">
+        <div class="proc-spinner"></div>
+        <p class="proc-phase">{phaseLabel[phase]}</p>
 
-      <div class="proc-steps">
-        {#if source === 'live'}
-          <div class="proc-step done">
-            <span class="step-icon">✓</span>
-            Транскрипт получен из live-сессии ({liveTranscript.split('\n').filter(l => l.trim()).length} реплик, {fmtDuration(liveDuration)})
+        <div class="proc-steps">
+          {#if source === 'live'}
+            <div class="proc-step done">
+              <span class="step-icon">✓</span>
+              Транскрипт получен из live-сессии ({liveTranscript.split('\n').filter(l => l.trim()).length} реплик, {fmtDuration(liveDuration)})
+            </div>
+          {:else}
+            <div class="proc-step" class:active={phase === 'transcribing'} class:done={phase === 'analyzing' || phase === 'done'}>
+              <span class="step-icon">{phase === 'analyzing' || phase === 'done' ? '✓' : phase === 'transcribing' ? '⟳' : '·'}</span>
+              transcribe_file — транскрипция{source === 'demo' ? ' (demo)' : ' · Mistral Voxtral'}
+            </div>
+          {/if}
+          <div class="proc-step" class:active={phase === 'analyzing'}>
+            <span class="step-icon">{phase === 'analyzing' ? '⟳' : '·'}</span>
+            Параллельно: /api/summary · /api/insights
           </div>
-        {:else}
-          <div class="proc-step" class:active={phase === 'transcribing'} class:done={phase === 'analyzing' || phase === 'done'}>
-            <span class="step-icon">{phase === 'analyzing' || phase === 'done' ? '✓' : phase === 'transcribing' ? '⟳' : '·'}</span>
-            transcribe_file — транскрипция{source === 'demo' ? ' (demo)' : ' · Mistral Voxtral'}
+          <div class="proc-step">
+            <span class="step-icon">·</span>
+            Сохранение результатов
           </div>
-        {/if}
-        <div class="proc-step" class:active={phase === 'analyzing'}>
-          <span class="step-icon">{phase === 'analyzing' ? '⟳' : '·'}</span>
-          Параллельно: /api/summary · /api/insights
-        </div>
-        <div class="proc-step">
-          <span class="step-icon">·</span>
-          Сохранение результатов
         </div>
       </div>
+
+      <!-- Show transcript preview during processing if we have it -->
+      {#if hasLiveTranscript && phase === 'analyzing'}
+        <div class="live-transcript-preview">
+          <div class="preview-header">
+            <span class="preview-icon">🔤</span>
+            <span class="preview-title">Транскрипт звонка</span>
+            <span class="preview-badge">{liveTranscript.split('\n').filter(l => l.trim()).length} реплик · {fmtDuration(liveDuration)}</span>
+          </div>
+          <pre class="preview-text">{liveTranscript}</pre>
+        </div>
+      {/if}
     </div>
 
   <!-- Error -->
@@ -349,8 +456,9 @@
           <span class="card-icon">📝</span>
           <span class="card-title">Саммари встречи</span>
           <span class="card-badge">{sourceBadge[source] ?? 'API'}</span>
+          <button class="copy-btn" on:click={() => copyToClipboard(summaryText, 'Саммари')}>📋</button>
         </div>
-        <p class="summary-text">{summaryText}</p>
+        <div class="summary-text">{@html renderMarkdown(summaryText)}</div>
       </div>
 
       <!-- Action items -->
@@ -359,6 +467,7 @@
           <span class="card-icon">✅</span>
           <span class="card-title">Action Items</span>
           <span class="count">{actionItems.length}</span>
+          <button class="copy-btn" on:click={() => copyToClipboard(actionItems.map(a => `- [${a.done ? 'x' : ' '}] ${a.task} (${a.owner})`).join('\n'), 'Action Items')}>📋</button>
         </div>
         <div class="action-list">
           {#each actionItems as item}
@@ -384,19 +493,34 @@
         <div class="card-header">
           <span class="card-icon">🔑</span>
           <span class="card-title">Ключевые решения</span>
+          <span class="count">{decisions.length}</span>
         </div>
         <ul class="decisions-list">
           {#each decisions as d}
             <li>{d}</li>
           {/each}
-          {#each insights as ins}
-            <li class="insight-item">{ins}</li>
-          {/each}
-          {#if decisions.length === 0 && insights.length === 0}
+          {#if decisions.length === 0}
             <li class="empty">Нет данных</li>
           {/if}
         </ul>
       </div>
+
+      <!-- Suggested next steps -->
+      {#if insights.length > 0}
+        <div class="result-card">
+          <div class="card-header">
+            <span class="card-icon">🚀</span>
+            <span class="card-title">Рекомендуемые шаги</span>
+            <span class="count">{insights.length}</span>
+            <button class="copy-btn" on:click={() => copyToClipboard(insights.join('\n'), 'Шаги')}>📋</button>
+          </div>
+          <ul class="steps-list">
+            {#each insights as ins}
+              <li>{@html renderMarkdown(ins)}</li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
 
       <!-- Transcript (collapsible) -->
       <div class="result-card wide">
@@ -476,6 +600,37 @@
     flex-shrink: 0;
   }
   .export-btn:hover { color: #c8d0e7 }
+
+  .duration-badge {
+    font-size: 14px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: #10b981;
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    padding: 4px 12px;
+    border-radius: 8px;
+    flex-shrink: 0;
+  }
+
+  .copy-btn {
+    background: none;
+    border: none;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 2px 4px;
+    opacity: 0.4;
+    transition: opacity 0.15s;
+    flex-shrink: 0;
+  }
+  .copy-btn:hover { opacity: 1 }
+
+  .processing-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1;
+  }
 
   /* Upload panel */
   .upload-panel {
@@ -673,6 +828,42 @@
 
   .summary-text { font-size: 14px; color: #8896b3; line-height: 1.65 }
 
+  .summary-text :global(.md-h) {
+    font-size: 15px;
+    font-weight: 700;
+    color: #c8d0e7;
+    margin: 16px 0 8px;
+  }
+  .summary-text :global(.md-h:first-child) {
+    margin-top: 0;
+  }
+  .summary-text :global(.md-list) {
+    margin: 8px 0;
+    padding-left: 20px;
+    list-style: none;
+  }
+  .summary-text :global(.md-list li) {
+    font-size: 14px;
+    color: #8896b3;
+    line-height: 1.65;
+    padding-left: 4px;
+    position: relative;
+  }
+  .summary-text :global(.md-list li::before) {
+    content: '•';
+    position: absolute;
+    left: -14px;
+    color: #3b82f6;
+  }
+  .summary-text :global(strong) {
+    color: #c8d0e7;
+    font-weight: 600;
+  }
+  .summary-text :global(em) {
+    color: #6b7db3;
+    font-style: italic;
+  }
+
   .action-list { display: flex; flex-direction: column; gap: 8px }
 
   .action-item {
@@ -703,7 +894,18 @@
     padding-left: 14px; position: relative; line-height: 1.5;
   }
   .decisions-list li::before { content: '›'; position: absolute; left: 0; color: #3b82f6; font-weight: 700 }
-  .insight-item { color: #6b7db3 !important }
+
+  .steps-list { list-style: none; display: flex; flex-direction: column; gap: 10px }
+  .steps-list li {
+    font-size: 13px; color: #8896b3;
+    padding: 10px 14px;
+    background: #1e2535;
+    border-radius: 8px;
+    line-height: 1.5;
+    border-left: 3px solid #6366f1;
+  }
+  .steps-list li :global(strong) { color: #c8d0e7 }
+  .steps-list li :global(em) { color: #6b7db3 }
   .empty { color: #2d3a56 !important; font-style: italic }
 
   /* Transcript */
@@ -753,4 +955,37 @@
     transition: color 0.15s;
   }
   .manual-upload-link:hover { color: #6b7db3 }
+
+  .live-transcript-preview {
+    background: #161b27;
+    border: 1px solid #1e2535;
+    border-radius: 14px;
+    padding: 16px 20px;
+    max-height: 250px;
+    overflow-y: auto;
+  }
+  .preview-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .preview-icon { font-size: 14px }
+  .preview-title { font-size: 13px; font-weight: 600; color: #c8d0e7; flex: 1 }
+  .preview-badge {
+    font-size: 10px;
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .preview-text {
+    font-size: 12px;
+    color: #6b7db3;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+  }
 </style>
