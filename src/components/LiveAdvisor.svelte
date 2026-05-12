@@ -28,6 +28,27 @@
   // ---- Confirmation modal ----
   let showEndConfirm = false
 
+  // ---- Helper: start mic recording (called when server is ready) ----
+  async function startMicRecording() {
+    if (mic || isRecording) return  // Already started
+
+    mic = createMicRecorder({
+      onSegment(base64Audio) {
+        if (liveConnection && !stopped && !isPaused) {
+          liveConnection.sendAudio(base64Audio, 'mic')
+        }
+      },
+    })
+    const micOk = await mic.start()
+    if (!micOk) {
+      toast('Не удалось запустить микрофон', 'error')
+      return
+    }
+    isRecording = true
+    dispatch('recordingChange', { isRecording: true })
+    toast('Запись начата', 'success')
+  }
+
   // ---- Auto-scroll ----
   let transcriptScrollEl
   let userScrolledUp = false
@@ -82,6 +103,7 @@
     try {
       liveConnection = await connectLiveHints({
         onTranscript(msg) {
+          console.log('[LiveHints] Transcript:', msg)
           const speaker = msg.speaker === 'user' ? 'Менеджер' : 'Клиент'
           const prefix = msg.speaker === 'user' ? '[Вы]:' : '[Оппонент]:'
           const text = msg.text?.trim()
@@ -115,10 +137,13 @@
           }, ...advisorCards.filter(c => !c.loading)].slice(0, 8)
         },
         onStatus(msg) {
+          console.log('[LiveHints] Status:', msg.status, msg)
           if (msg.status === 'ready') {
             wsConnected = true
             wsConnecting = false
             toast('WebSocket подключен', 'success')
+            // Start mic recording now that server is ready
+            startMicRecording()
           } else if (msg.status === 'processing') {
             // Server is busy processing previous chunk
           } else if (msg.status === 'silent_chunk') {
@@ -131,37 +156,30 @@
           }
         },
         onError(msg) {
+          console.error('[LiveHints] Error:', msg)
           wsError = msg.message || 'WebSocket error'
           wsConnecting = false
           toast(wsError, 'error')
         },
       })
 
-      // Send session config
+      // Send session config — mic will start when server sends 'ready' status
       const clientCtx = meeting
         ? `Клиент: ${meeting.client}. Контакт: ${meeting.contact}. Тема: ${meeting.topic}.`
         : ''
       liveConnection.sendConfig('sales', clientCtx)
 
-      wsConnected = true
-      wsConnecting = false
+      // Note: DO NOT set wsConnected here! Wait for 'ready' from server (see onStatus)
+      // Mic recording will start in onStatus when ready is received
 
-      // Start mic recording — native WASAPI in Electron, getUserMedia in browser
-      mic = createMicRecorder({
-        onSegment(base64Audio) {
-          if (liveConnection && !stopped && !isPaused) {
-            liveConnection.sendAudio(base64Audio, 'mic')
-          }
-        },
-      })
-      const micOk = await mic.start()
-      if (!micOk) {
-        toast('Не удалось запустить микрофон', 'error')
-        throw new Error('Mic capture failed')
-      }
-      isRecording = true
-      dispatch('recordingChange', { isRecording: true })
-      toast('Запись начата', 'success')
+      // Timeout: if server doesn't send 'ready' within 10 seconds, show error
+      setTimeout(() => {
+        if (!wsConnected && wsConnecting) {
+          wsConnecting = false
+          wsError = 'Сервер не подтвердил готовность (timeout)'
+          toast(wsError, 'error')
+        }
+      }, 10000)
 
     } catch (e) {
       wsError = e.message || 'Connection failed'

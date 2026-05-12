@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startSystemAudio: () => ipcRenderer.invoke('start-system-audio'),
   stopSystemAudio: () => ipcRenderer.invoke('stop-system-audio'),
   onSystemAudioChunk: (callback) => {
+    ipcRenderer.removeAllListeners('system-audio-chunk')
     ipcRenderer.on('system-audio-chunk', (_event, data) => callback(data))
   },
   removeSystemAudioListener: () => {
@@ -19,6 +20,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startMic: () => ipcRenderer.invoke('start-mic'),
   stopMic: () => ipcRenderer.invoke('stop-mic'),
   onMicAudioChunk: (callback) => {
+    ipcRenderer.removeAllListeners('mic-audio-chunk')
     ipcRenderer.on('mic-audio-chunk', (_event, data) => callback(data))
   },
   removeMicListener: () => {
