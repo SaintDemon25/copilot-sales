@@ -25,6 +25,7 @@ async function ensureToken() {
 
   _loginPromise = (async () => {
     try {
+      console.log('[Auth] Logging in with:', DS_EMAIL)
       const res = await fetch(`${BASE_URL}/api/auth/login`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -33,8 +34,12 @@ async function ensureToken() {
       if (res.ok) {
         const data = await res.json()
         _token = data.access_token
+        console.log('[Auth] Login successful, token length:', _token?.length)
+      } else {
+        console.error('[Auth] Login failed:', res.status, res.statusText)
       }
-    } catch {
+    } catch (e) {
+      console.error('[Auth] Login error:', e)
       // network error — leave _token empty, calls will fail with real error
     } finally {
       _loginPromise = null
@@ -277,20 +282,26 @@ export async function connectLiveHints({ onTranscript, onHint, onStatus, onError
     ? BASE_URL.replace(/^http/, 'ws') + '/api/live-hints/ws?token=' + encodeURIComponent(_token)
     : `ws://${location.host}/api/live-hints/ws?token=${encodeURIComponent(_token)}`
 
+  console.log('[LiveHints] Connecting to:', wsUrl.replace(/token=[^&]+/, 'token=***'))
+
   const ws = new WebSocket(wsUrl)
 
   return new Promise((resolve, reject) => {
     ws.addEventListener('open', () => {
+      console.log('[LiveHints] WebSocket opened')
       resolve({
         ws,
         sendConfig(templateKey, contextText = '') {
-          ws.send(JSON.stringify({
+          const payload = {
             type: 'session_config',
             template_key: templateKey,
             context_text: contextText,
-          }))
+          }
+          console.log('[LiveHints] Sending config:', payload)
+          ws.send(JSON.stringify(payload))
         },
         sendAudio(base64, source = 'mic') {
+          console.log('[LiveHints] Sending audio chunk:', source, 'size:', base64?.length)
           ws.send(JSON.stringify({
             type: 'audio_chunk',
             audio_b64: base64,
@@ -315,6 +326,7 @@ export async function connectLiveHints({ onTranscript, onHint, onStatus, onError
     ws.addEventListener('message', (event) => {
       let msg
       try { msg = JSON.parse(event.data) } catch { return }
+      console.log('[LiveHints] Message received:', msg)
 
       switch (msg.type) {
         case 'transcript':
@@ -333,11 +345,13 @@ export async function connectLiveHints({ onTranscript, onHint, onStatus, onError
     })
 
     ws.addEventListener('error', (e) => {
+      console.error('[LiveHints] WebSocket error:', e)
       onError?.({ code: 'ws_error', message: 'WebSocket connection error' })
       reject(e)
     })
 
     ws.addEventListener('close', () => {
+      console.log('[LiveHints] WebSocket closed')
       onStatus?.({ status: 'disconnected' })
     })
   })
