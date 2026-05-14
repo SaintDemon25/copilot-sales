@@ -51,7 +51,6 @@
 
   // ---- Auto-scroll ----
   let transcriptScrollEl
-  let userScrolledUp = false
 
   // ---- Timers ----
   let elapsedTimer
@@ -71,22 +70,23 @@
   const typeLabels = { tactical: 'Действие', strategic: 'Стратегия', warning: 'Внимание', analytical: 'Инсайт' }
   const typeIcons = { tactical: '⚡', strategic: '🧭', warning: '⚠️', analytical: '💡' }
 
-  // ---- Auto-scroll logic ----
-  async function scrollToBottom() {
-    if (userScrolledUp || !transcriptScrollEl) return
+  // ---- Auto-scroll logic (newest on top) ----
+  async function scrollToTop() {
+    if (userScrolledDown || !transcriptScrollEl) return
     await tick()
-    transcriptScrollEl.scrollTop = transcriptScrollEl.scrollHeight
+    transcriptScrollEl.scrollTop = 0
   }
+
+  let userScrolledDown = false
 
   function handleScroll() {
     if (!transcriptScrollEl) return
-    const atBottom = transcriptScrollEl.scrollHeight - transcriptScrollEl.scrollTop - transcriptScrollEl.clientHeight < 60
-    userScrolledUp = !atBottom
+    userScrolledDown = transcriptScrollEl.scrollTop > 60
   }
 
   function scrollToLatest() {
-    userScrolledUp = false
-    scrollToBottom()
+    userScrolledDown = false
+    scrollToTop()
   }
 
   // ---- Toast helper ----
@@ -109,9 +109,9 @@
           const text = msg.text?.trim()
           if (!text) return
 
-          displayedLines = [...displayedLines, { speaker, text }]
+          displayedLines = [{ speaker, text, ts: Date.now() }, ...displayedLines]
           transcriptText += `${prefix} ${text}\n`
-          scrollToBottom()
+          scrollToTop()
 
           // Local fast layer trigger detection
           const trigger = detectTrigger(text)
@@ -262,7 +262,7 @@
     elapsedTimer = setInterval(() => {
       if (!isPaused && isRecording) elapsed++
     }, 1000)
-    // Auto-start only if a meeting is selected
+    freshnessTicker = setInterval(() => { now = Date.now() }, 5000)
     if (meeting) {
       startLiveSession()
     }
@@ -270,6 +270,7 @@
 
   onDestroy(() => {
     clearInterval(elapsedTimer)
+    clearInterval(freshnessTicker)
     stopped = true
     if (liveConnection) liveConnection.close()
     if (mic) mic.stop()
@@ -282,6 +283,19 @@
     liveConnection.sendHintFeedback(card.hintId, rating)
     card.feedback = direction
     advisorCards = advisorCards
+  }
+
+  // ---- Freshness ticker for hint cards ----
+  let now = Date.now()
+  let freshnessTicker
+
+  function fmtAgo(ts) {
+    if (!ts) return ''
+    const sec = Math.floor((now - ts) / 1000)
+    if (sec < 10) return 'сейчас'
+    if (sec < 60) return `${sec}с назад`
+    const min = Math.floor(sec / 60)
+    return `${min}м назад`
   }
 
   function fmtElapsed(s) {
@@ -348,13 +362,6 @@
     {/if}
 
     <div class="transcript-scroll" bind:this={transcriptScrollEl} on:scroll={handleScroll}>
-      {#each displayedLines as line}
-        <div class="line" class:manager={line.speaker === 'Менеджер'}>
-          <span class="speaker">{line.speaker}</span>
-          <span class="text">{line.text}</span>
-        </div>
-      {/each}
-
       {#if displayedLines.length === 0}
         <div class="waiting">
           {#if !meeting}
@@ -369,18 +376,26 @@
             <span class="listening-label">Нажмите «Начать» для подключения</span>
           {/if}
         </div>
-      {:else if wsConnected && !isPaused}
-        <div class="listening">
-          <span class="wave"></span><span class="wave"></span><span class="wave"></span>
-          <span class="listening-label">Слушаю…</span>
-        </div>
+      {:else}
+        {#if wsConnected && !isPaused}
+          <div class="listening">
+            <span class="wave"></span><span class="wave"></span><span class="wave"></span>
+            <span class="listening-label">Слушаю…</span>
+          </div>
+        {/if}
+        {#each displayedLines as line}
+          <div class="line" class:manager={line.speaker === 'Менеджер'}>
+            <span class="speaker">{line.speaker}</span>
+            <span class="text">{line.text}</span>
+          </div>
+        {/each}
       {/if}
     </div>
 
-    <!-- Scroll to bottom button -->
-    {#if userScrolledUp && displayedLines.length > 0}
-      <button class="scroll-bottom-btn" on:click={scrollToLatest}>
-        ↓ К последним репликам
+    <!-- Scroll to latest button -->
+    {#if userScrolledDown && displayedLines.length > 0}
+      <button class="scroll-top-btn" on:click={scrollToLatest}>
+        ↑ К последним репликам
       </button>
     {/if}
 
@@ -446,12 +461,18 @@
           <div
             class="tip-card"
             class:tip-loading={card.loading}
+            class:tip-stale={card.ts && (now - card.ts) > 90000}
             style="border-color:{typeColors[card.type] || '#3b82f6'}33; background:{typeColors[card.type] || '#3b82f6'}0a"
           >
             <div class="tip-header">
               <span class="tip-badge" style="background:{typeColors[card.type] || '#3b82f6'}22; color:{typeColors[card.type] || '#3b82f6'}">
                 {typeIcons[card.type] || ''} {typeLabels[card.type] || card.type}
               </span>
+              {#if card.ts}
+                <span class="tip-ago" class:tip-ago-fresh={card.ts && (now - card.ts) < 15000}>
+                  {fmtAgo(card.ts)}
+                </span>
+              {/if}
             </div>
             <p class="tip-advice">{card.advice}</p>
             {#if card.rationale}
@@ -760,9 +781,9 @@
     40%           { transform: scale(1) }
   }
 
-  .scroll-bottom-btn {
+  .scroll-top-btn {
     position: absolute;
-    bottom: 70px;
+    top: 160px;
     left: 50%;
     transform: translateX(-50%);
     padding: 6px 14px;
@@ -775,7 +796,7 @@
     z-index: 10;
     transition: all 0.15s;
   }
-  .scroll-bottom-btn:hover { background: rgba(59,130,246,0.3) }
+  .scroll-top-btn:hover { background: rgba(59,130,246,0.3) }
 
   .audio-bar {
     display: flex;
@@ -865,6 +886,7 @@
     animation: slideIn 0.35s ease;
   }
   .tip-card.tip-loading { opacity: 0.6 }
+  .tip-card.tip-stale { opacity: 0.4 }
 
   @keyframes slideIn {
     from { opacity: 0; transform: translateX(10px) }
@@ -885,6 +907,13 @@
     text-transform: uppercase;
     letter-spacing: 0.4px;
   }
+  .tip-ago {
+    font-size: 10px;
+    color: #4b5a7a;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .tip-ago-fresh { color: #10b981 }
   .tip-advice { font-size: 13px; color: #c8d0e7; line-height: 1.5; margin-bottom: 6px }
   .tip-rationale { font-size: 11px; color: #4b5a7a; line-height: 1.4; margin-bottom: 8px; font-style: italic }
   .tip-footer { display: flex; align-items: center; justify-content: space-between }
