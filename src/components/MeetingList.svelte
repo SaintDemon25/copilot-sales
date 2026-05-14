@@ -1,11 +1,12 @@
 <script>
   import { createEventDispatcher } from 'svelte'
   import ClientDossier from './ClientDossier.svelte'
+  import { fetchTodayMeetings, isCalDavConfigured } from '../lib/caldav.js'
 
   const dispatch = createEventDispatcher()
   export let activeMeeting
 
-  const meetings = [
+  const MOCK_MEETINGS = [
     {
       id: 1,
       time: '09:30',
@@ -56,6 +57,42 @@
     },
   ]
 
+  // ---- Data source toggle ----
+  let dataSource = 'mock'  // 'mock' | 'caldav'
+  let meetings = MOCK_MEETINGS
+  let caldavLoading = false
+  let caldavError = ''
+  let caldavConfigured = isCalDavConfigured()
+
+  async function loadCalDavMeetings() {
+    caldavLoading = true
+    caldavError = ''
+    try {
+      meetings = await fetchTodayMeetings()
+      if (meetings.length === 0) {
+        caldavError = 'Нет событий на сегодня'
+      }
+      selectedMeeting = meetings[0] || null
+    } catch (e) {
+      caldavError = e.message || 'Ошибка CalDAV'
+      meetings = []
+      selectedMeeting = null
+    } finally {
+      caldavLoading = false
+    }
+  }
+
+  function switchSource(source) {
+    dataSource = source
+    caldavError = ''
+    if (source === 'mock') {
+      meetings = MOCK_MEETINGS
+      selectedMeeting = activeMeeting ?? meetings[1]
+    } else {
+      loadCalDavMeetings()
+    }
+  }
+
   let selectedMeeting = activeMeeting ?? meetings[1]
   $: dispatch('select', selectedMeeting)
 
@@ -68,11 +105,50 @@
   <!-- Left: meeting list -->
   <div class="meeting-panel">
     <div class="panel-header">
-      <h2>Встречи на сегодня</h2>
+      <div class="header-top">
+        <h2>Встречи на сегодня</h2>
+        <div class="source-toggle">
+          <button
+            class="toggle-btn"
+            class:active={dataSource === 'mock'}
+            on:click={() => switchSource('mock')}
+          >Mock</button>
+          <button
+            class="toggle-btn"
+            class:active={dataSource === 'caldav'}
+            disabled={!caldavConfigured}
+            title={caldavConfigured ? 'CalDAV' : 'Заполните VITE_CALDAV_* в .env'}
+            on:click={() => switchSource('caldav')}
+          >CalDAV</button>
+        </div>
+      </div>
       <span class="date">{new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
     </div>
 
+    {#if caldavLoading}
+      <div class="caldav-status loading">
+        <span class="spinner"></span> Загрузка CalDAV...
+      </div>
+    {/if}
+    {#if caldavError}
+      <div class="caldav-status error">
+        {caldavError}
+        {#if dataSource === 'caldav'}
+          <button class="retry-link" on:click={loadCalDavMeetings}>Повторить</button>
+        {/if}
+      </div>
+    {/if}
+
     <div class="meeting-list">
+      {#if meetings.length === 0 && !caldavLoading}
+        <div class="empty-state">
+          {#if dataSource === 'caldav'}
+            Нет событий в календаре на сегодня
+          {:else}
+            Нет встреч
+          {/if}
+        </div>
+      {/if}
       {#each meetings as m}
         <button
           class="meeting-card"
@@ -145,10 +221,79 @@
     gap: 4px;
   }
 
+  .header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
   .panel-header h2 {
     font-size: 18px;
     font-weight: 600;
     color: #e8eaed;
+  }
+
+  .source-toggle {
+    display: flex;
+    background: #1e2535;
+    border-radius: 8px;
+    border: 1px solid #252e42;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .toggle-btn {
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    border: none;
+    color: #4b5a7a;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .toggle-btn:hover:not(:disabled) { color: #8896b3 }
+  .toggle-btn.active {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+  }
+  .toggle-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .caldav-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+  }
+  .caldav-status.loading {
+    background: rgba(245, 158, 11, 0.08);
+    color: #f59e0b;
+  }
+  .caldav-status.error {
+    background: rgba(239, 68, 68, 0.08);
+    color: #f87171;
+  }
+  .retry-link {
+    background: none;
+    border: none;
+    color: #60a5fa;
+    cursor: pointer;
+    font-size: 12px;
+    text-decoration: underline;
+    margin-left: auto;
+  }
+
+  .empty-state {
+    padding: 32px 16px;
+    text-align: center;
+    color: #4b5a7a;
+    font-size: 13px;
   }
 
   .date {
