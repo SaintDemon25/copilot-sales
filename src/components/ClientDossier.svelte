@@ -8,11 +8,28 @@
   let dossierReady = false
 
   $: if (meeting) {
-    loading = true
-    dossierReady = false
-    const delay = meeting.prepStatus === 'loading' ? 1800 : 400
-    setTimeout(() => { loading = false; dossierReady = true }, delay)
+    if (meeting.caldavUid) {
+      loading = false
+      dossierReady = true
+    } else {
+      loading = true
+      dossierReady = false
+      const delay = meeting.prepStatus === 'loading' ? 1800 : 400
+      setTimeout(() => { loading = false; dossierReady = true }, delay)
+    }
   }
+
+  const SKIP_WORDS = /^(ООО|АО|ПАО|ГУП|ЗАО|ОАО|ИП|НКО|ФГУП|МУП)$/i
+  function getInitials(name) {
+    if (!name) return '?'
+    const words = name.replace(/[«»""()]/g, '').split(/\s+/).filter(w => w && !SKIP_WORDS.test(w))
+    if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase()
+    if (words.length === 1) return words[0].slice(0, 2).toUpperCase()
+    return name[0]?.toUpperCase() || '?'
+  }
+
+  $: initials = getInitials(meeting?.client || '')
+  $: isCalDav = !!meeting?.caldavUid
 
   const mockDossier = {
     revenue: '₽ 2.4 млрд',
@@ -41,10 +58,15 @@
 <div class="dossier">
   <div class="dossier-header">
     <div class="client-block">
-      <div class="client-avatar">{meeting.client[4]}</div>
+      <div class="client-avatar">{initials}</div>
       <div>
         <div class="client-title">{meeting.client}</div>
-        <div class="client-sub">ИНН {meeting.inn} · {meeting.contact}</div>
+        <div class="client-sub">
+          {#if meeting.inn}ИНН {meeting.inn} · {/if}{meeting.contact || ''}
+          {#if !meeting.inn && !meeting.contact && meeting.topic}
+            {meeting.topic}
+          {/if}
+        </div>
       </div>
     </div>
     <div class="header-actions">
@@ -70,6 +92,34 @@
         <div class="tool-call">⚙️ search_procurement <span class="tc-src">zakupki.gov.ru</span></div>
       </div>
     </div>
+  {:else if isCalDav}
+    <div class="dossier-body">
+      <!-- CalDAV meeting info -->
+      <div class="caldav-info">
+        <div class="info-row">
+          <span class="info-label">Время</span>
+          <span class="info-value">{meeting.time} · {meeting.duration}</span>
+        </div>
+        {#if meeting.topic && meeting.topic !== meeting.client}
+          <div class="info-row">
+            <span class="info-label">Тема / место</span>
+            <span class="info-value">{meeting.topic}</span>
+          </div>
+        {/if}
+        {#if meeting.contact}
+          <div class="info-row">
+            <span class="info-label">Контакт</span>
+            <span class="info-value">{meeting.contact}</span>
+          </div>
+        {/if}
+      </div>
+
+      <div class="empty-dossier">
+        <div class="empty-icon">📋</div>
+        <p class="empty-title">Досье не загружено</p>
+        <p class="empty-hint">Данные из CRM и новостей пока недоступны для CalDAV-встреч.<br/>Prep Agent заработает после подключения CRM-интеграции.</p>
+      </div>
+    </div>
   {:else}
     <div class="dossier-body">
       <!-- Stats row -->
@@ -93,7 +143,6 @@
       </div>
 
       <div class="two-col">
-        <!-- Pain points & Questions -->
         <div class="section">
           <div class="section-title">🎯 Гипотезы о болях</div>
           <ul class="list">
@@ -113,7 +162,6 @@
         </div>
       </div>
 
-      <!-- News -->
       <div class="section">
         <div class="section-title">📰 Свежие новости о клиенте</div>
         <div class="news-list">
@@ -127,7 +175,6 @@
         </div>
       </div>
 
-      <!-- Competitors -->
       <div class="section">
         <div class="section-title">⚔️ Конкуренты в воронке</div>
         <div class="competitor-row">
@@ -419,5 +466,60 @@
 
   .last-deal strong {
     color: #8896b3;
+  }
+
+  .caldav-info {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+    background: #1e2535;
+    border-radius: 10px;
+  }
+
+  .info-row {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .info-label {
+    font-size: 11px;
+    color: #4b5a7a;
+    min-width: 90px;
+    flex-shrink: 0;
+  }
+
+  .info-value {
+    font-size: 13px;
+    color: #c8d0e7;
+  }
+
+  .empty-dossier {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 32px;
+    text-align: center;
+  }
+
+  .empty-icon {
+    font-size: 36px;
+    margin-bottom: 4px;
+  }
+
+  .empty-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #6b7db3;
+  }
+
+  .empty-hint {
+    font-size: 12px;
+    color: #4b5a7a;
+    line-height: 1.5;
   }
 </style>
