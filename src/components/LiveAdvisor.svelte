@@ -57,19 +57,19 @@
   let elapsedTimer
 
   // ---- Trigger keywords for local fast layer ----
-  const TRIGGERS = ['цена', 'стоит', 'бюджет', 'возражени', 'конкурент', 'sap', '1с', 'интеграц', 'дорого', 'дешевле']
-
   function detectTrigger(text) {
     const lower = text.toLowerCase()
-    if (lower.includes('цена') || lower.includes('стоит') || lower.includes('бюджет') || lower.includes('дорого') || lower.includes('дешевле')) return 'price'
-    if (lower.includes('возражени')) return 'objection'
-    if (lower.includes('конкурент') || lower.includes('sap') || lower.includes('1с') || lower.includes('альтернатив')) return 'competitor'
-    if (lower.includes('интеграц') || lower.includes('апи') || lower.includes('api')) return 'question'
+    if (/цен[аеуы]|стоимость|бюджет|дорого|дешев|скидк|тариф|оплат|рассрочк/.test(lower)) return 'warning'
+    if (/подумаем|не подход|не готов|не уверен|сомнев|слишком|не устраив|отлож|позже/.test(lower)) return 'warning'
+    if (/конкурент|sap|1с|альтернатив|другой поставщик|другое предложение/.test(lower)) return 'warning'
+    if (/демо|внедрен|пилот|договор|контракт|давайте попробу|когда можем начать/.test(lower)) return 'tactical'
+    if (/интеграц|апи|api|как работает|можно ли|поддержив/.test(lower)) return 'analytical'
     return null
   }
 
-  const typeColors = { question: '#3b82f6', price: '#f59e0b', competitor: '#ef4444', objection: '#a855f7', argumentative: '#a855f7', navigational: '#3b82f6', tactical: '#10b981', strategic: '#6366f1', warning: '#ef4444', analytical: '#f59e0b' }
-  const typeLabels = { question: 'Вопрос', price: 'Цена', competitor: 'Конкурент', objection: 'Возражение', argumentative: 'Аргумент', navigational: 'Навигация', tactical: 'Тактика', strategic: 'Стратегия', warning: 'Предупреждение', analytical: 'Аналитика' }
+  const typeColors = { tactical: '#10b981', strategic: '#6366f1', warning: '#ef4444', analytical: '#f59e0b' }
+  const typeLabels = { tactical: 'Действие', strategic: 'Стратегия', warning: 'Внимание', analytical: 'Инсайт' }
+  const typeIcons = { tactical: '⚡', strategic: '🧭', warning: '⚠️', analytical: '💡' }
 
   // ---- Auto-scroll logic ----
   async function scrollToBottom() {
@@ -116,25 +116,41 @@
           // Local fast layer trigger detection
           const trigger = detectTrigger(text)
           if (trigger) {
+            const loadingId = `loading-${Date.now()}`
+            const shortText = text.length > 60 ? text.slice(0, 60) + '…' : text
             advisorCards = [{
+              id: loadingId,
               type: trigger,
               title: typeLabels[trigger],
-              advice: `Обнаружен триггер: "${text}". Совет от агента загружается...`,
-              source: 'Fast Layer · Локально',
+              advice: `${typeIcons[trigger]} «${shortText}» — генерирую совет…`,
+              source: 'Быстрый слой · Локально',
               fresh: true,
               loading: true,
-            }, ...advisorCards].slice(0, 8)
+              ts: Date.now(),
+            }, ...advisorCards].slice(0, 10)
+
+            // Auto-remove stale loading card after 10s
+            setTimeout(() => {
+              advisorCards = advisorCards.filter(c => c.id !== loadingId)
+            }, 10000)
           }
         },
         onHint(msg) {
+          const legacyMap = { argumentative: 'tactical', navigational: 'strategic' }
+          const hintType = legacyMap[msg.hint_type] || msg.hint_type || 'tactical'
+          const priorityLabels = { critical: 'Критично', high: 'Важно', medium: 'Совет', low: 'Инфо' }
+          const prioLabel = priorityLabels[msg.priority] || msg.priority || 'Совет'
+
           advisorCards = [{
-            type: msg.hint_type || 'argumentative',
-            title: typeLabels[msg.hint_type] || msg.hint_type || 'Совет',
+            type: hintType,
+            title: typeLabels[hintType] || hintType,
             advice: msg.text,
-            source: `Live Advisor · ${msg.priority || 'medium'}`,
+            source: `${prioLabel} · Live Advisor`,
+            rationale: msg.rationale || '',
             fresh: true,
             hintId: msg.hint_id,
-          }, ...advisorCards.filter(c => !c.loading)].slice(0, 8)
+            ts: Date.now(),
+          }, ...advisorCards.filter(c => !c.loading)].slice(0, 10)
         },
         onStatus(msg) {
           console.log('[LiveHints] Status:', msg.status, msg)
@@ -259,6 +275,14 @@
     if (mic) mic.stop()
     if (systemAudio) systemAudio.stop()
   })
+
+  function sendFeedback(card, direction) {
+    if (!liveConnection || !card.hintId) return
+    const rating = direction === 'up' ? 1 : -1
+    liveConnection.sendHintFeedback(card.hintId, rating)
+    card.feedback = direction
+    advisorCards = advisorCards
+  }
 
   function fmtElapsed(s) {
     const m   = Math.floor(s / 60).toString().padStart(2, '0')
@@ -414,7 +438,7 @@
       <div class="waiting-tips">
         <div class="waiting-icon">👂</div>
         <p>Анализирую диалог…</p>
-        <p class="hint">Советы появятся при обнаружении триггеров:<br/>цена · возражение · конкурент · вопрос</p>
+        <p class="hint">Триггеры: цена · возражение · конкурент · покупательский сигнал · потребность<br/>Layer 0 → regex, Layer 1 → LLM-классификатор, Layer 2 → LLM-советник</p>
       </div>
     {:else}
       <div class="tips-list">
@@ -426,12 +450,24 @@
           >
             <div class="tip-header">
               <span class="tip-badge" style="background:{typeColors[card.type] || '#3b82f6'}22; color:{typeColors[card.type] || '#3b82f6'}">
-                {typeLabels[card.type] || card.type}
+                {typeIcons[card.type] || ''} {typeLabels[card.type] || card.type}
               </span>
-              <span class="tip-title">{card.title}</span>
             </div>
             <p class="tip-advice">{card.advice}</p>
-            <div class="tip-source">📎 {card.source}</div>
+            {#if card.rationale}
+              <p class="tip-rationale">{card.rationale}</p>
+            {/if}
+            <div class="tip-footer">
+              <span class="tip-source">{card.source}</span>
+              {#if card.hintId && liveConnection}
+                <div class="tip-feedback">
+                  <button class="fb-btn fb-up" class:fb-selected={card.feedback === 'up'}
+                    on:click={() => sendFeedback(card, 'up')}>👍</button>
+                  <button class="fb-btn fb-down" class:fb-selected={card.feedback === 'down'}
+                    on:click={() => sendFeedback(card, 'down')}>👎</button>
+                </div>
+              {/if}
+            </div>
           </div>
         {/each}
       </div>
@@ -439,21 +475,27 @@
 
     <div class="cascade-info">
       <div class="cascade-row">
-        <span class="cascade-label">Быстрый слой</span>
+        <span class="cascade-label">Layer 0 · Фронт</span>
         <span class="cascade-status" class:active={wsConnected}>
-          Keyword classifier · {wsConnected ? 'активен' : 'ожидает'}
+          Триггеры (regex) · {wsConnected ? 'активен' : 'ожидает'}
         </span>
       </div>
       <div class="cascade-row">
-        <span class="cascade-label">Медленный слой</span>
-        <span class="cascade-status" class:active={advisorCards.length > 0}>
-          WS /api/live-hints · {advisorCards.length > 0 ? 'активен' : 'ожидает триггер'}
+        <span class="cascade-label">Layer 1 · Классификатор</span>
+        <span class="cascade-status" class:active={advisorCards.some(c => !c.loading)}>
+          LLM fast · {advisorCards.some(c => !c.loading) ? 'активен' : 'ожидает'}
         </span>
       </div>
       <div class="cascade-row">
-        <span class="cascade-label">Backend</span>
+        <span class="cascade-label">Layer 2 · Советник</span>
+        <span class="cascade-status" class:active={advisorCards.some(c => !c.loading && c.rationale)}>
+          LLM strong · {advisorCards.some(c => !c.loading && c.rationale) ? 'активен' : 'ожидает'}
+        </span>
+      </div>
+      <div class="cascade-row">
+        <span class="cascade-label">DialogScribe</span>
         <span class="cascade-status" class:active={wsConnected}>
-          DialogScribe {wsConnected ? '🟢' : wsConnecting ? '🟡' : '🔴'}
+          {wsConnected ? '🟢 Подключен' : wsConnecting ? '🟡 Подключение' : '🔴 Офлайн'}
         </span>
       </div>
     </div>
@@ -843,9 +885,23 @@
     text-transform: uppercase;
     letter-spacing: 0.4px;
   }
-  .tip-title { font-size: 13px; font-weight: 600; color: #c8d0e7 }
-  .tip-advice { font-size: 13px; color: #8896b3; line-height: 1.5; margin-bottom: 8px }
+  .tip-advice { font-size: 13px; color: #c8d0e7; line-height: 1.5; margin-bottom: 6px }
+  .tip-rationale { font-size: 11px; color: #4b5a7a; line-height: 1.4; margin-bottom: 8px; font-style: italic }
+  .tip-footer { display: flex; align-items: center; justify-content: space-between }
   .tip-source { font-size: 11px; color: #2d3a56 }
+  .tip-feedback { display: flex; gap: 4px }
+  .fb-btn {
+    padding: 2px 6px;
+    background: transparent;
+    border: 1px solid #1e2535;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    opacity: 0.5;
+    transition: all 0.15s;
+  }
+  .fb-btn:hover { opacity: 1; background: #1e2535 }
+  .fb-btn.fb-selected { opacity: 1; border-color: #3b82f6 }
 
   .cascade-info {
     padding: 12px 16px;
