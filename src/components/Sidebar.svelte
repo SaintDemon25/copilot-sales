@@ -11,6 +11,7 @@
     { id: 'today', icon: '📅', label: 'Сегодня' },
     { id: 'live',  icon: '🎙️', label: 'В эфире' },
     { id: 'post',  icon: '📊', label: 'Итоги' },
+    { id: 'prep',  icon: '📋', label: 'Подготовка' },
   ]
 </script>
 
