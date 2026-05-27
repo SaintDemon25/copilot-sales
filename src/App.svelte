@@ -4,10 +4,11 @@
   import MeetingList from './components/MeetingList.svelte'
   import LiveAdvisor from './components/LiveAdvisor.svelte'
   import PostMeeting from './components/PostMeeting.svelte'
+  import MeetingPrep from './components/MeetingPrep.svelte'
   import AgentStatusBar from './components/AgentStatusBar.svelte'
   import Toast from './components/Toast.svelte'
 
-  let activeView = 'today'   // 'today' | 'live' | 'post'
+  let activeView = 'today'   // 'today' | 'live' | 'post' | 'prep'
   let activeMeeting = null
   let liveTranscript = ''
   let liveDuration = 0
@@ -92,6 +93,8 @@
               on:back={handlePostMeetingBack}
               on:toast={handleToast}
             />
+          {:else if activeView === 'prep'}
+            <MeetingPrep on:toast={handleToast} />
           {/if}
         </div>
       {/key}
