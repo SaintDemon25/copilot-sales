@@ -38,6 +38,6 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [svelte()],
-    server: { proxy },
+    server: { host: '127.0.0.1', proxy },
   }
 })
