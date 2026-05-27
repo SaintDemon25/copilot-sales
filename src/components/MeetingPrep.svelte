@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import { marked } from 'marked'
+  import DOMPurify from 'dompurify'
   import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType } from 'docx'
   import { saveAs } from 'file-saver'
   import { getModels, generateMeetingPrep } from '../lib/api.js'
@@ -16,7 +17,6 @@
 
   let resultMarkdown = ''
   let resultModel = ''
-  let resultId = ''
   let resultHtml = ''
 
   let llmAvailable = true
@@ -43,9 +43,7 @@
       }
       llmAvailable = true
     } catch (e) {
-      if (e?.message?.includes('503')) {
-        llmAvailable = false
-      }
+      llmAvailable = false
     } finally {
       llmChecked = true
     }
@@ -55,7 +53,6 @@
     errorMsg = ''
     resultMarkdown = ''
     resultModel = ''
-    resultId = ''
     resultHtml = ''
     generating = true
 
@@ -65,10 +62,9 @@
         catalogData,
         model: selectedModel || undefined,
       })
-      resultId = result.id
       resultMarkdown = result.markdown
       resultModel = result.model
-      resultHtml = marked.parse(resultMarkdown, { breaks: true })
+      resultHtml = DOMPurify.sanitize(marked.parse(resultMarkdown, { breaks: true }))
     } catch (e) {
       errorMsg = e?.message ?? 'Ошибка генерации плана'
     } finally {
@@ -76,26 +72,17 @@
     }
   }
 
-  function downloadBlob(blob, filename) {
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
   function exportTxt() {
     if (!resultMarkdown) return
     const blob = new Blob([resultMarkdown], { type: 'text/plain; charset=utf-8' })
-    downloadBlob(blob, 'meeting-prep-plan.txt')
+    saveAs(blob, 'meeting-prep-plan.txt')
   }
 
   function exportHtml() {
     if (!resultMarkdown) return
-    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Подготовка к встрече</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:2em auto;padding:0 1em;line-height:1.7;color:#222}h1{font-size:1.4em}h2{font-size:1.2em;margin-top:1.5em}h3{font-size:1.05em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;text-align:left}th{background:#f5f5f5}</style></head><body>' + resultHtml + '</body></html>'
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Подготовка к встрече</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:2em auto;padding:0 1em;line-height:1.7;color:#222}h1{font-size:1.4em}h2{font-size:1.2em;margin-top:1.5em}h3{font-size:1.05em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;text-align:left}th{background:#f5f5f5}</style></head><body>' + DOMPurify.sanitize(resultHtml) + '</body></html>'
     const blob = new Blob([html], { type: 'text/html; charset=utf-8' })
-    downloadBlob(blob, 'meeting-prep-plan.html')
+    saveAs(blob, 'meeting-prep-plan.html')
   }
 
   async function exportDocx() {
@@ -153,11 +140,26 @@
       } else if (line.startsWith('# ')) {
         children.push(new Paragraph({ text: line.slice(2), heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 160 } }))
       } else if (line.startsWith('- ') || line.startsWith('* ')) {
-        const text = line.slice(2).replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1')
-        children.push(new Paragraph({ children: [new TextRun({ text: '\u2022 ' + text, size: 22, font: 'Arial' })], spacing: { after: 40 }, indent: { left: 360 } }))
+        const listContent = line.slice(2)
+        const parts = listContent.split(/(\*\*.+?\*\*|\*.+?\*)/g)
+        const runs = parts.filter(p => p).map(part => {
+          if (part.startsWith('**') && part.endsWith('**')) return new TextRun({ text: part.slice(2, -2), bold: true, size: 22, font: 'Arial' })
+          if (part.startsWith('*') && part.endsWith('*')) return new TextRun({ text: part.slice(1, -1), italics: true, size: 22, font: 'Arial' })
+          return new TextRun({ text: part, size: 22, font: 'Arial' })
+        })
+        runs.unshift(new TextRun({ text: '\u2022 ', size: 22, font: 'Arial' }))
+        children.push(new Paragraph({ children: runs, spacing: { after: 40 }, indent: { left: 360 } }))
       } else if (/^\d+\.\s/.test(line)) {
-        const text = line.replace(/^\d+\.\s/, '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1')
-        children.push(new Paragraph({ children: [new TextRun({ text, size: 22, font: 'Arial' })], spacing: { after: 40 }, indent: { left: 360 } }))
+        const match = line.match(/^(\d+\.\s)/)
+        const listContent = line.slice(match[0].length)
+        const parts = listContent.split(/(\*\*.+?\*\*|\*.+?\*)/g)
+        const runs = parts.filter(p => p).map(part => {
+          if (part.startsWith('**') && part.endsWith('**')) return new TextRun({ text: part.slice(2, -2), bold: true, size: 22, font: 'Arial' })
+          if (part.startsWith('*') && part.endsWith('*')) return new TextRun({ text: part.slice(1, -1), italics: true, size: 22, font: 'Arial' })
+          return new TextRun({ text: part, size: 22, font: 'Arial' })
+        })
+        runs.unshift(new TextRun({ text: match[0], size: 22, font: 'Arial' }))
+        children.push(new Paragraph({ children: runs, spacing: { after: 40 }, indent: { left: 360 } }))
       } else if (line.trim()) {
         const parts = line.split(/(\*\*.+?\*\*|\*.+?\*)/g)
         const runs = parts
