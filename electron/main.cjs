@@ -94,9 +94,32 @@ const MIME = {
   '.ico':  'image/x-icon',
 }
 
+function proxyToSalesAgent(req, res) {
+  const target = `http://localhost:${SALES_AGENT_PORT}${req.url.replace(/^\/agent-api/, '')}`
+  const parsed = new URL(target)
+  const proxyReq = http.request({
+    hostname: parsed.hostname,
+    port: parsed.port,
+    path: parsed.pathname + parsed.search,
+    method: req.method,
+    headers: { ...req.headers, host: `localhost:${SALES_AGENT_PORT}` },
+  }, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, proxyRes.headers)
+    proxyRes.pipe(res)
+  })
+  proxyReq.on('error', () => {
+    res.writeHead(502, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Sales agent unavailable' }))
+  })
+  req.pipe(proxyReq)
+}
+
 function startServer() {
   return new Promise((resolve, reject) => {
     server = http.createServer((req, res) => {
+      if (req.url.startsWith('/agent-api')) {
+        return proxyToSalesAgent(req, res)
+      }
       const urlPath = req.url.split('?')[0]
       let filePath = path.join(DIST_DIR, urlPath === '/' ? 'index.html' : urlPath)
       if (!filePath.startsWith(DIST_DIR)) { res.writeHead(403); return res.end() }

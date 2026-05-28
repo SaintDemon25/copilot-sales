@@ -1,646 +1,317 @@
 <script>
-  import { onMount } from 'svelte'
-  import { marked } from 'marked'
-  import DOMPurify from 'dompurify'
-  import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType } from 'docx'
-  import { saveAs } from 'file-saver'
-  import { getModels, generateMeetingPrep } from '../lib/api.js'
+  import { createEventDispatcher, onMount } from 'svelte';
+  import { getMeetingPlan } from '../lib/agentApi.js';
 
-  let models = []
-  let selectedModel = ''
+  export let meeting = null;
+  export let cardData = null;
 
-  let companyData = ''
-  let catalogData = ''
+  const dispatch = createEventDispatcher();
 
-  let generating = false
-  let errorMsg = ''
+  let meetingPlan = null;
+  let planLoading = false;
+  let planError = null;
 
-  let resultMarkdown = ''
-  let resultModel = ''
-  let resultHtml = ''
+  $: if (meeting && cardData && !meetingPlan && !planLoading) {
+    generatePlan();
+  }
 
-  let llmAvailable = true
-  let llmChecked = false
-
-  $: canGenerate = companyData.trim().length > 0 && catalogData.trim().length > 0 && llmAvailable && !generating
-
-  onMount(() => {
-    loadModels()
-  })
-
-  async function loadModels() {
+  async function generatePlan() {
+    planLoading = true;
+    planError = null;
     try {
-      const data = await getModels()
-      if (Array.isArray(data)) {
-        models = data.map(m => typeof m === 'string' ? { id: m, name: m } : { id: m.id ?? m, name: m.name ?? m.id ?? m })
-      } else if (data?.models) {
-        models = data.models.map(m => ({ id: m.id ?? m, name: m.name ?? m.id ?? m }))
+      const contact = meeting.contact || cardData?.crm?.contacts?.find(c => c.isLpr)?.name || '';
+      const result = await getMeetingPlan(meeting.client, meeting.topic, contact, cardData);
+      if (result.success && result.plan) {
+        meetingPlan = result.plan;
+        dispatch('planReady', { companyName: meeting.client, plan: meetingPlan });
       } else {
-        models = []
+        throw new Error(result.error || 'Не удалось сгенерировать план');
       }
-      if (models.length > 0 && !selectedModel) {
-        selectedModel = models[0].id
-      }
-      llmAvailable = true
-    } catch (e) {
-      llmAvailable = false
+    } catch (err) {
+      planError = err.message;
     } finally {
-      llmChecked = true
+      planLoading = false;
     }
   }
 
-  async function generate() {
-    errorMsg = ''
-    resultMarkdown = ''
-    resultModel = ''
-    resultHtml = ''
-    generating = true
-
-    try {
-      const result = await generateMeetingPrep({
-        companyData,
-        catalogData,
-        model: selectedModel || undefined,
-      })
-      resultMarkdown = result.markdown
-      resultModel = result.model
-      resultHtml = DOMPurify.sanitize(marked.parse(resultMarkdown, { breaks: true }))
-    } catch (e) {
-      errorMsg = e?.message ?? 'Ошибка генерации плана'
-    } finally {
-      generating = false
-    }
+  function handleStartMeeting() {
+    dispatch('startMeeting', { meeting, plan: meetingPlan });
   }
 
-  function exportTxt() {
-    if (!resultMarkdown) return
-    const blob = new Blob([resultMarkdown], { type: 'text/plain; charset=utf-8' })
-    saveAs(blob, 'meeting-prep-plan.txt')
+  function handleBack() {
+    dispatch('back');
   }
 
-  function exportHtml() {
-    if (!resultMarkdown) return
-    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Подготовка к встрече</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:2em auto;padding:0 1em;line-height:1.7;color:#222}h1{font-size:1.4em}h2{font-size:1.2em;margin-top:1.5em}h3{font-size:1.05em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;text-align:left}th{background:#f5f5f5}</style></head><body>' + DOMPurify.sanitize(resultHtml) + '</body></html>'
-    const blob = new Blob([html], { type: 'text/html; charset=utf-8' })
-    saveAs(blob, 'meeting-prep-plan.html')
-  }
-
-  async function exportDocx() {
-    if (!resultMarkdown) return
-
-    const lines = resultMarkdown.split('\n')
-    const children = []
-    let i = 0
-
-    while (i < lines.length) {
-      const line = lines[i]
-
-      if (line.startsWith('|')) {
-        const tableLines = []
-        while (i < lines.length && lines[i].startsWith('|')) {
-          tableLines.push(lines[i])
-          i++
-        }
-        const rows = tableLines
-          .filter(l => !l.match(/^\|[\s\-:|]+\|$/))
-          .map(l => l.split('|').slice(1, -1).map(c => c.trim()))
-        if (rows.length > 0) {
-          const tableRows = rows.map(
-            (cells, idx) =>
-              new TableRow({
-                tableHeader: idx === 0,
-                children: cells.map(
-                  cell =>
-                    new TableCell({
-                      width: { size: Math.floor(100 / cells.length), type: WidthType.PERCENTAGE },
-                      children: [
-                        new Paragraph({
-                          children: [new TextRun({ text: cell, bold: idx === 0, size: 22, font: 'Arial' })],
-                          spacing: { after: 40 },
-                        }),
-                      ],
-                    })
-                ),
-              })
-          )
-          children.push(
-            new Table({
-              rows: tableRows,
-              width: { size: 100, type: WidthType.PERCENTAGE },
-            })
-          )
-        }
-        continue
-      }
-
-      if (line.startsWith('### ')) {
-        children.push(new Paragraph({ text: line.slice(4), heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 } }))
-      } else if (line.startsWith('## ')) {
-        children.push(new Paragraph({ text: line.slice(3), heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 120 } }))
-      } else if (line.startsWith('# ')) {
-        children.push(new Paragraph({ text: line.slice(2), heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 160 } }))
-      } else if (line.startsWith('- ') || line.startsWith('* ')) {
-        const listContent = line.slice(2)
-        const parts = listContent.split(/(\*\*.+?\*\*|\*.+?\*)/g)
-        const runs = parts.filter(p => p).map(part => {
-          if (part.startsWith('**') && part.endsWith('**')) return new TextRun({ text: part.slice(2, -2), bold: true, size: 22, font: 'Arial' })
-          if (part.startsWith('*') && part.endsWith('*')) return new TextRun({ text: part.slice(1, -1), italics: true, size: 22, font: 'Arial' })
-          return new TextRun({ text: part, size: 22, font: 'Arial' })
-        })
-        runs.unshift(new TextRun({ text: '\u2022 ', size: 22, font: 'Arial' }))
-        children.push(new Paragraph({ children: runs, spacing: { after: 40 }, indent: { left: 360 } }))
-      } else if (/^\d+\.\s/.test(line)) {
-        const match = line.match(/^(\d+\.\s)/)
-        const listContent = line.slice(match[0].length)
-        const parts = listContent.split(/(\*\*.+?\*\*|\*.+?\*)/g)
-        const runs = parts.filter(p => p).map(part => {
-          if (part.startsWith('**') && part.endsWith('**')) return new TextRun({ text: part.slice(2, -2), bold: true, size: 22, font: 'Arial' })
-          if (part.startsWith('*') && part.endsWith('*')) return new TextRun({ text: part.slice(1, -1), italics: true, size: 22, font: 'Arial' })
-          return new TextRun({ text: part, size: 22, font: 'Arial' })
-        })
-        runs.unshift(new TextRun({ text: match[0], size: 22, font: 'Arial' }))
-        children.push(new Paragraph({ children: runs, spacing: { after: 40 }, indent: { left: 360 } }))
-      } else if (line.trim()) {
-        const parts = line.split(/(\*\*.+?\*\*|\*.+?\*)/g)
-        const runs = parts
-          .filter(p => p)
-          .map(part => {
-            if (part.startsWith('**') && part.endsWith('**')) return new TextRun({ text: part.slice(2, -2), bold: true, size: 22, font: 'Arial' })
-            if (part.startsWith('*') && part.endsWith('*')) return new TextRun({ text: part.slice(1, -1), italics: true, size: 22, font: 'Arial' })
-            return new TextRun({ text: part, size: 22, font: 'Arial' })
-          })
-        children.push(new Paragraph({ children: runs, spacing: { after: 80 } }))
-      }
-      i++
-    }
-
-    const doc = new Document({
-      sections: [{ children }],
-    })
-    const blob = await Packer.toBlob(doc)
-    saveAs(blob, 'meeting-prep-plan.docx')
+  $: initials = getInitials(meeting?.client || '');
+  function getInitials(name) {
+    if (!name) return '?';
+    const skip = /^(ООО|АО|ПАО|ГУП|ЗАО|ОАО|ИП|НКО|ФГУП|МУП)$/i;
+    const words = name.replace(/[«»""()]/g, '').split(/\s+/).filter(w => w && !skip.test(w));
+    if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+    if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+    return name[0]?.toUpperCase() || '?';
   }
 </script>
 
-<div class="prep-layout">
-  {#if !llmChecked}
-    <div class="loading-screen">
-      <div class="spinner"></div>
-      <p>Загрузка…</p>
-    </div>
-  {:else if !llmAvailable}
-    <div class="degradation-banner">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-        <line x1="12" y1="9" x2="12" y2="13"/>
-        <line x1="12" y1="17" x2="12.01" y2="17"/>
-      </svg>
-      <span>LLM не настроен. Функция подготовки к встрече недоступна.</span>
-    </div>
-  {:else}
+{#if !meeting}
+  <div class="prep-empty">
+    <div class="empty-icon">📋</div>
+    <p>Встреча не выбрана</p>
+  </div>
+{:else}
+  <div class="prep-layout">
+    <!-- Header -->
     <div class="prep-header">
-      <div class="prep-heading">Подготовка к встрече</div>
-      <p class="prep-desc">Генерация плана подготовки к встрече с компанией на основе данных о компании и каталога продуктов</p>
-    </div>
-
-    {#if errorMsg}
-      <div class="error-banner">{errorMsg}</div>
-    {/if}
-
-    <div class="input-grid">
-      <div class="card">
-        <h3>Данные о компании</h3>
-        <p class="input-hint">Вставьте выписку, CRM-данные, результаты веб-поиска о компании</p>
-        <textarea
-          class="textarea"
-          placeholder="ИНН, ОГРН, адрес, контакты, новости, сайт, вакансии..."
-          bind:value={companyData}
-          rows="14"
-          disabled={generating}
-        ></textarea>
-        <span class="char-count">{companyData.length.toLocaleString()} символов</span>
+      <div class="header-left">
+        <button class="back-btn" on:click={handleBack} title="Назад к карточке">← Назад</button>
+        <div class="avatar">{initials}</div>
+        <div class="header-info">
+          <div class="client-name">{meeting.client}</div>
+          <div class="client-meta">{meeting.topic || 'Встреча'}{meeting.contact ? ` · ${meeting.contact}` : ''}</div>
+        </div>
       </div>
-
-      <div class="card">
-        <h3>Каталог продуктов</h3>
-        <p class="input-hint">Вставьте описание продуктов и услуг вашей компании</p>
-        <textarea
-          class="textarea"
-          placeholder="Список продуктов, услуг, ценовые категории..."
-          bind:value={catalogData}
-          rows="14"
-          disabled={generating}
-        ></textarea>
-        <span class="char-count">{catalogData.length.toLocaleString()} символов</span>
-      </div>
-    </div>
-
-    <div class="settings-bar card">
-      <div class="setting-group">
-        <label for="model-select">Модель</label>
-        <select id="model-select" bind:value={selectedModel} disabled={generating}>
-          {#each models as m}
-            <option value={m.id}>{m.name}</option>
-          {/each}
-        </select>
-      </div>
-
-      <div class="action-group">
-        <button class="btn btn-primary generate-btn" on:click={generate} disabled={!canGenerate}>
-          {#if generating}
-            <span class="btn-spinner"></span>
-            Генерация…
-          {:else}
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="btn-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
-            Сгенерировать план
-          {/if}
+      <div class="header-right">
+        {#if meetingPlan}
+          <button class="refresh-btn" on:click={generatePlan} disabled={planLoading}>
+            🔄 Обновить план
+          </button>
+        {/if}
+        <button class="start-btn" on:click={handleStartMeeting} disabled={!meetingPlan}>
+          🎙️ Начать встречу
         </button>
       </div>
     </div>
 
-    {#if resultMarkdown}
-      <div class="card result-card">
-        <div class="result-header">
-          <h3>План подготовки</h3>
-          <div class="result-meta">
-            <span class="badge badge-model">{resultModel}</span>
-            <div class="export-buttons">
-              <button class="btn btn-sm" on:click={exportTxt}>TXT</button>
-              <button class="btn btn-sm" on:click={exportDocx}>DOCX</button>
-              <button class="btn btn-sm" on:click={exportHtml}>HTML</button>
+    <!-- Content -->
+    <div class="prep-body">
+      {#if planLoading}
+        <div class="loading-state">
+          <div class="spinner"></div>
+          <p>Готовим план встречи…</p>
+          <div class="loading-steps">
+            <div style="animation-delay:0s">📊 Анализ карточки клиента</div>
+            <div style="animation-delay:0.3s">🎯 Формирование повестки</div>
+            <div style="animation-delay:0.6s">💡 Подготовка аргументов и вопросов</div>
+          </div>
+        </div>
+
+      {:else if planError}
+        <div class="error-state">
+          <div class="err-icon">⚠️</div>
+          <p class="err-title">Ошибка при генерации плана</p>
+          <p class="err-text">{planError}</p>
+          <button class="retry-btn" on:click={generatePlan}>Повторить</button>
+        </div>
+
+      {:else if meetingPlan}
+        <div class="plan-content">
+          <!-- Goal -->
+          <div class="plan-goal">
+            <span class="goal-label">🎯 Цель встречи</span>
+            <span class="goal-text">{meetingPlan.goal}</span>
+          </div>
+
+          <!-- Two-column layout -->
+          <div class="plan-grid">
+            <!-- Left column -->
+            <div class="plan-col">
+              <!-- Agenda -->
+              {#if meetingPlan.agenda?.length}
+                <section class="plan-section">
+                  <h3>📅 Повестка</h3>
+                  <div class="agenda-list">
+                    {#each meetingPlan.agenda as item, i}
+                      <div class="agenda-item">
+                        <span class="agenda-num">{i + 1}</span>
+                        <div class="agenda-body">
+                          <div class="agenda-topic">
+                            <span>{item.topic}</span>
+                            <span class="agenda-time">{item.time}</span>
+                          </div>
+                          {#if item.notes}<div class="agenda-notes">{item.notes}</div>{/if}
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                </section>
+              {/if}
+
+              <!-- Key Questions -->
+              {#if meetingPlan.keyQuestions?.length}
+                <section class="plan-section">
+                  <h3>❓ Ключевые вопросы</h3>
+                  <ul class="plan-list questions">
+                    {#each meetingPlan.keyQuestions as q}
+                      <li>{q}</li>
+                    {/each}
+                  </ul>
+                </section>
+              {/if}
+            </div>
+
+            <!-- Right column -->
+            <div class="plan-col">
+              <!-- Talking Points -->
+              {#if meetingPlan.talkingPoints?.length}
+                <section class="plan-section">
+                  <h3>💬 Аргументы</h3>
+                  <ul class="plan-list">
+                    {#each meetingPlan.talkingPoints as tp}
+                      <li>{tp}</li>
+                    {/each}
+                  </ul>
+                </section>
+              {/if}
+
+              <!-- Objections -->
+              {#if meetingPlan.objections?.length}
+                <section class="plan-section">
+                  <h3>🛡️ Возражения и ответы</h3>
+                  <div class="objections-list">
+                    {#each meetingPlan.objections as obj}
+                      <div class="objection-item">
+                        <div class="obj-q">❓ {obj.objection}</div>
+                        <div class="obj-a">💡 {obj.response}</div>
+                      </div>
+                    {/each}
+                  </div>
+                </section>
+              {/if}
+
+              <!-- Next Steps -->
+              {#if meetingPlan.nextSteps?.length}
+                <section class="plan-section">
+                  <h3>➡️ Следующие шаги</h3>
+                  <ul class="plan-list">
+                    {#each meetingPlan.nextSteps as ns}
+                      <li>{ns}</li>
+                    {/each}
+                  </ul>
+                </section>
+              {/if}
             </div>
           </div>
         </div>
-        <div class="result-content">
-          {@html resultHtml}
-        </div>
-      </div>
-    {/if}
-  {/if}
-</div>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
+  .prep-empty {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; gap: 8px; color: #4b5a7a;
+  }
+  .empty-icon { font-size: 36px; }
+
   .prep-layout {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    height: 100%;
-    overflow-y: auto;
-    padding: 8px 0;
-  }
-
-  .loading-screen {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 300px;
-    gap: 1rem;
-    color: #6b7db3;
-  }
-
-  .spinner {
-    width: 32px;
-    height: 32px;
-    border: 3px solid #1e2535;
-    border-top-color: #8b5cf6;
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .degradation-banner {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-top: 2rem;
-    padding: 1rem 1.25rem;
-    background: rgba(239, 68, 68, 0.08);
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    border-radius: 14px;
-    color: #f87171;
-    font-size: 0.9375rem;
-    font-weight: 500;
+    display: flex; flex-direction: column; height: 100%;
+    background: #161b27; border: 1px solid #1e2535; border-radius: 16px; overflow: hidden;
   }
 
   .prep-header {
-    margin-bottom: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 24px; border-bottom: 1px solid #1e2535; flex-shrink: 0; gap: 12px; flex-wrap: wrap;
+  }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+  .back-btn {
+    padding: 6px 12px; border-radius: 6px; border: 1px solid #252e42;
+    background: #1e2535; color: #6b7db3; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s;
+  }
+  .back-btn:hover { background: #252e42; color: #c8d0e7; }
+
+  .avatar {
+    width: 36px; height: 36px; border-radius: 10px;
+    background: linear-gradient(135deg, #8b5cf6, #3b82f6);
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-weight: 700; font-size: 13px; flex-shrink: 0;
+  }
+  .client-name { font-size: 15px; font-weight: 600; color: #e8eaed; }
+  .client-meta { font-size: 12px; color: #4b5a7a; margin-top: 1px; }
+
+  .refresh-btn {
+    padding: 8px 14px; border-radius: 8px; border: 1px solid #252e42;
+    background: #1e2535; color: #6b7db3; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+  }
+  .refresh-btn:hover:not(:disabled) { background: #252e42; color: #c8d0e7; }
+  .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .start-btn {
+    padding: 8px 20px; border-radius: 8px; border: none; font-size: 13px;
+    font-weight: 600; cursor: pointer; background: linear-gradient(135deg, #10b981, #059669);
+    color: white; transition: all 0.15s;
+  }
+  .start-btn:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+  .start-btn:disabled { background: #1e2535; color: #4b5a7a; cursor: not-allowed; }
+
+  .prep-body { flex: 1; overflow-y: auto; padding: 20px 24px; }
+
+  /* Loading */
+  .loading-state { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 64px 0; }
+  .spinner {
+    width: 32px; height: 32px; border-radius: 50%;
+    border: 3px solid #1e2535; border-top-color: #3b82f6; animation: spin 0.9s linear infinite;
+  }
+  .loading-state p { font-size: 14px; color: #6b7db3; }
+  .loading-steps { display: flex; flex-direction: column; gap: 6px; }
+  .loading-steps div { font-size: 12px; color: #4b5a7a; animation: fadeIn 0.3s ease both; }
+
+  /* Error */
+  .error-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 64px 0; }
+  .err-icon { font-size: 28px; }
+  .err-title { font-size: 14px; font-weight: 600; color: #f87171; }
+  .err-text { font-size: 12px; color: #4b5a7a; }
+  .retry-btn {
+    margin-top: 8px; padding: 8px 16px; border-radius: 8px; border: 1px solid #252e42;
+    background: #1e2535; color: #c8d0e7; font-size: 13px; font-weight: 600; cursor: pointer;
   }
 
-  .prep-heading {
-    font-size: 18px;
-    font-weight: 600;
-    color: #e8eaed;
+  /* Plan Content */
+  .plan-content { display: flex; flex-direction: column; gap: 20px; }
+
+  .plan-goal {
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 16px 20px; background: rgba(59,130,246,0.08); border-radius: 12px; border-left: 4px solid #3b82f6;
   }
+  .goal-label { font-size: 12px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 0.04em; }
+  .goal-text { font-size: 16px; color: #e8eaed; line-height: 1.55; }
 
-  .prep-desc {
-    color: #4b5a7a;
-    font-size: 0.875rem;
-    margin-top: 4px;
+  .plan-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  .plan-col { display: flex; flex-direction: column; gap: 16px; }
+
+  .plan-section {
+    background: #1e2535; border-radius: 12px; padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 10px;
   }
+  .plan-section h3 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7db3; margin: 0; }
 
-  .input-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 14px;
+  .plan-list { margin: 0; padding-left: 18px; font-size: 14px; color: #c8d0e7; display: flex; flex-direction: column; gap: 8px; line-height: 1.55; }
+  .plan-list li::marker { color: #3b82f6; }
+  .plan-list.questions li { color: #e8eaed; font-weight: 500; }
+
+  .agenda-list { display: flex; flex-direction: column; gap: 6px; }
+  .agenda-item { display: flex; gap: 10px; padding: 8px 10px; background: rgba(59,130,246,0.06); border-radius: 8px; }
+  .agenda-num {
+    width: 22px; height: 22px; border-radius: 50%; background: rgba(59,130,246,0.15);
+    color: #60a5fa; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   }
+  .agenda-body { flex: 1; }
+  .agenda-topic { display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 600; color: #e8eaed; }
+  .agenda-time { font-size: 12px; font-weight: 500; color: #4b5a7a; flex-shrink: 0; }
+  .agenda-notes { font-size: 13px; color: #6b7db3; margin-top: 3px; line-height: 1.5; }
 
-  .card {
-    background: #161b27;
-    border: 1px solid #1e2535;
-    border-radius: 14px;
-    padding: 16px 18px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
+  .objections-list { display: flex; flex-direction: column; gap: 8px; }
+  .objection-item { padding: 10px 12px; background: rgba(245,158,11,0.06); border-radius: 8px; font-size: 14px; line-height: 1.5; }
+  .obj-q { color: #f59e0b; font-weight: 600; margin-bottom: 4px; }
+  .obj-a { color: #10b981; line-height: 1.5; }
 
-  .card h3 {
-    margin: 0;
-    font-size: 0.9375rem;
-    color: #c8d0e7;
-  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
 
-  .input-hint {
-    margin: 0;
-    font-size: 0.8125rem;
-    color: #4b5a7a;
-  }
-
-  .textarea {
-    width: 100%;
-    resize: vertical;
-    min-height: 200px;
-    font-family: inherit;
-    font-size: 0.8125rem;
-    line-height: 1.6;
-    background: #1e2535;
-    border: 1px solid #252e42;
-    border-radius: 8px;
-    color: #c8d0e7;
-    padding: 10px 12px;
-    transition: border-color 0.15s;
-  }
-
-  .textarea:focus {
-    outline: none;
-    border-color: #3b82f6;
-  }
-
-  .textarea::placeholder {
-    color: #2d3a56;
-  }
-
-  .textarea:disabled {
-    opacity: 0.5;
-  }
-
-  .char-count {
-    display: block;
-    text-align: right;
-    font-size: 0.75rem;
-    color: #4b5a7a;
-    margin-top: 2px;
-  }
-
-  .settings-bar {
-    display: flex;
-    gap: 14px;
-    flex-wrap: wrap;
-    align-items: flex-end;
-  }
-
-  .setting-group {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    flex: 1;
-    min-width: 200px;
-  }
-
-  .setting-group label {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: #4b5a7a;
-  }
-
-  .setting-group select {
-    background: #1e2535;
-    border: 1px solid #252e42;
-    border-radius: 8px;
-    color: #c8d0e7;
-    padding: 8px 12px;
-    font-size: 0.8125rem;
-    cursor: pointer;
-    transition: border-color 0.15s;
-  }
-
-  .setting-group select:focus {
-    outline: none;
-    border-color: #3b82f6;
-  }
-
-  .setting-group select:disabled {
-    opacity: 0.5;
-  }
-
-  .action-group {
-    display: flex;
-    align-items: flex-end;
-    padding-top: 22px;
-  }
-
-  .btn {
-    padding: 9px 20px;
-    border-radius: 8px;
-    border: none;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-
-  .btn-primary {
-    background: linear-gradient(135deg, #3b82f6, #6366f1);
-    color: #fff;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    opacity: 0.9;
-    transform: translateY(-1px);
-  }
-
-  .btn-primary:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-    transform: none;
-  }
-
-  .btn-sm {
-    background: #1e2535;
-    color: #6b7db3;
-    border: 1px solid #252e42;
-    padding: 4px 12px;
-    font-size: 12px;
-    font-weight: 500;
-  }
-
-  .btn-sm:hover {
-    color: #c8d0e7;
-    background: #252e42;
-  }
-
-  .generate-btn {
-    min-width: 200px;
-    height: 42px;
-    font-size: 0.9375rem;
-    white-space: nowrap;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-  }
-
-  .btn-spinner {
-    width: 14px;
-    height: 14px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-    display: inline-block;
-  }
-
-  .btn-icon {
-    width: 18px;
-    height: 18px;
-    display: inline-block;
-    vertical-align: middle;
-  }
-
-  .error-banner {
-    padding: 10px 16px;
-    background: rgba(239, 68, 68, 0.08);
-    color: #f87171;
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    border-radius: 10px;
-    font-size: 0.875rem;
-    line-height: 1.5;
-  }
-
-  .result-card {
-    animation: fadeUp 0.3s ease;
-  }
-
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  .result-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
-
-  .result-header h3 {
-    margin: 0;
-    font-size: 0.9375rem;
-  }
-
-  .result-meta {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-
-  .export-buttons {
-    display: flex;
-    gap: 6px;
-  }
-
-  .badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 999px;
-    font-size: 0.6875rem;
-    font-weight: 500;
-    white-space: nowrap;
-  }
-
-  .badge-model {
-    background: rgba(139, 92, 246, 0.12);
-    color: #a78bfa;
-    border: 1px solid rgba(139, 92, 246, 0.3);
-  }
-
-  .result-content {
-    font-size: 0.875rem;
-    line-height: 1.7;
-    color: #8896b3;
-  }
-
-  .result-content :global(h1),
-  .result-content :global(h2),
-  .result-content :global(h3) {
-    color: #c8d0e7;
-    margin-top: 1rem;
-    margin-bottom: 0.5rem;
-  }
-
-  .result-content :global(h1) { font-size: 1.25rem; }
-  .result-content :global(h2) { font-size: 1.0625rem; }
-  .result-content :global(h3) { font-size: 0.9375rem; }
-
-  .result-content :global(ul),
-  .result-content :global(ol) {
-    margin-left: 1.25rem;
-    margin-bottom: 0.5rem;
-  }
-
-  .result-content :global(p) {
-    margin-bottom: 0.5rem;
-  }
-
-  .result-content :global(table) {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 0.75rem 0;
-    font-size: 0.8125rem;
-  }
-
-  .result-content :global(th),
-  .result-content :global(td) {
-    border: 1px solid #1e2535;
-    padding: 6px 10px;
-    text-align: left;
-  }
-
-  .result-content :global(th) {
-    background: #1e2535;
-    font-weight: 600;
-    color: #c8d0e7;
-  }
-
-  .result-content :global(strong) {
-    color: #c8d0e7;
-  }
-
-  @media (max-width: 768px) {
-    .input-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .settings-bar {
-      flex-direction: column;
-    }
-
-    .action-group {
-      padding-top: 0;
-    }
+  @media (max-width: 900px) {
+    .plan-grid { grid-template-columns: 1fr; }
   }
 </style>
