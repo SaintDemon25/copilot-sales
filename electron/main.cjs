@@ -6,8 +6,8 @@ const { spawn } = require('child_process')
 
 // ═══ Sales Agent API — автозапуск Python ═══
 const SALES_AGENT_PORT = 8900;
-const SALES_AGENT_DIR = 'C:/Users/aasergeeva/Desktop/sales-agent';
-const PYTHON_CMD = 'C:/Users/aasergeeva/Desktop/sales-agent/venv/Scripts/python.exe';
+const SALES_AGENT_DIR = path.join(__dirname, '..', '..', 'sales-agent');
+const PYTHON_CMD = path.join(SALES_AGENT_DIR, 'venv', 'Scripts', 'python.exe');
 let salesAgentProcess = null;
 
 function checkSalesAgentHealth() {

@@ -236,9 +236,9 @@
         <div class="card-content">
           <!-- Stats -->
           <div class="stats-row">
-            <div class="stat"><div class="stat-label">Выручка</div><div class="stat-val">{os?.content?.match?.(/Выручка:\s*([\d,.]+\s*(млрд|млн)?)/)?.[1] || '—'}</div></div>
-            <div class="stat"><div class="stat-label">Сотрудники</div><div class="stat-val">{os?.content?.match?.(/Сотрудников:\s*([\d ]+)/)?.[1] || '—'}</div></div>
-            <div class="stat"><div class="stat-label">Регион</div><div class="stat-val sm">{os?.content?.match?.(/Регион:\s*(.+)/)?.[1] || '—'}</div></div>
+            <div class="stat"><div class="stat-label">Выручка</div><div class="stat-val">{os?.revenue ? formatRevenue(os.revenue) : '—'}</div></div>
+            <div class="stat"><div class="stat-label">Сотрудники</div><div class="stat-val">{os?.employeeCount ? os.employeeCount.toLocaleString('ru-RU') : '—'}</div></div>
+            <div class="stat"><div class="stat-label">Регион</div><div class="stat-val sm">{os?.region || '—'}</div></div>
             <div class="stat"><div class="stat-label">Открытых сделок</div><div class="stat-val">{openDeals}</div></div>
           </div>
 
