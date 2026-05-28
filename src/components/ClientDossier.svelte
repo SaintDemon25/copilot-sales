@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import { collectCard, collectCardDirect } from '../lib/agentApi.js';
+  import { collectCard, collectCardDirect, collectCardStream } from '../lib/agentApi.js';
   import ProductCard from './ProductCard.svelte';
 
   export let meeting = null;
@@ -17,6 +17,17 @@
   let error = null;
   let useAgent = true;
 
+  // Шаги сбора карточки (SSE прогресс)
+  const STEPS = [
+    { id: 'crm',        icon: '🏢', label: 'CRM' },
+    { id: 'opensearch', icon: '🔍', label: 'OpenSearch' },
+    { id: 'web',        icon: '🌐', label: 'Веб-поиск' },
+    { id: 'news',       icon: '📰', label: 'Новости' },
+    { id: 'vacancies',  icon: '💼', label: 'Вакансии' },
+    { id: 'sbar',       icon: '📊', label: 'СБАР' },
+  ];
+  let stepStates = {};
+
   // Локальное отображение — синхронизируется с existingCard
   let displayCard = null;
   let displayAnalysis = '';
@@ -24,6 +35,7 @@
 
   // ID встречи, для которой сейчас идёт сбор (для защиты от race condition)
   let collectingMeetingId = null;
+
 
   // ⚡ Ключевой фикс: loading=true ТОЛЬКО для той встречи, которую сейчас собирают.
   // Если пользователь переключился на другую вкладку — loading=false,
@@ -76,6 +88,13 @@
     return { won: 'rgba(16,185,129,0.15)', lost: 'rgba(239,68,68,0.15)', in_progress: 'rgba(59,130,246,0.15)', negotiation: 'rgba(245,158,11,0.15)' }[s] || 'rgba(75,90,122,0.15)';
   }
   function interIcon(t) { return { meeting: '🤝', call: '📞', email: '✉️', task: '✅' }[t] || '📝'; }
+  // ISO-дату из ddgs.news (2024-01-15T10:30:00+00:00) → «15 янв 2024»
+  function formatNewsDate(d) {
+    if (!d) return '';
+    const dt = new Date(d);
+    if (isNaN(dt.getTime())) return d;
+    return dt.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+  }
   function mdToHtml(md) {
     if (!md) return '';
     return md
@@ -92,30 +111,42 @@
   async function handleCollect() {
     if (!meeting || _apiLoading) return;
 
-    // ⚡ Фиксируем встречу на момент вызова (защита от race condition)
     const currentMeeting = meeting;
     const currentMeetingId = meeting.id;
     collectingMeetingId = currentMeetingId;
     _apiLoading = true; error = null;
+    stepStates = {};
 
     try {
-      const result = useAgent
-        ? await collectCard(currentMeeting.client, currentMeeting.topic, currentMeeting.inn)
-        : await collectCardDirect(currentMeeting.client, currentMeeting.topic, currentMeeting.inn);
+      // Всегда используем streaming для визуализации шагов сбора
+      const result = await collectCardStream(
+        currentMeeting.client, currentMeeting.topic, currentMeeting.inn,
+        (step, status, detail) => { stepStates = { ...stepStates, [step]: { status, detail } }; }
+      );
+
+      let llmAnalysis = '';
+      if (useAgent && result.success && result.data) {
+        stepStates = { ...stepStates, llm: { status: 'running', detail: 'Анализ данных…' } };
+        try {
+          const agentResult = await collectCard(currentMeeting.client, currentMeeting.topic, currentMeeting.inn);
+          llmAnalysis = agentResult.agentAnalysis || '';
+          stepStates = { ...stepStates, llm: { status: 'done', detail: 'Готово' } };
+        } catch {
+          stepStates = { ...stepStates, llm: { status: 'done', detail: 'Пропущен' } };
+        }
+      }
 
       if (result.success && result.data) {
         const newCard = result.data;
-        const newAnalysis = result.agentAnalysis || '';
+        const newAnalysis = llmAnalysis;
         const newHasLLM = useAgent && !!newAnalysis;
 
-        // Обновляем отображение ТОЛЬКО если пользователь всё ещё на этой же встрече
         if (meeting?.id === currentMeetingId) {
           displayCard = newCard;
           displayAnalysis = newAnalysis;
           displayHasLLM = newHasLLM;
         }
 
-        // Уведомляем родителя с ЗАФИКСИРОВАННЫМ именем компании
         dispatch('cardCollected', {
           companyName: currentMeeting.client,
           card: newCard,
@@ -131,13 +162,11 @@
         throw new Error(result.error || 'Некорректный ответ');
       }
     } catch (err) {
-      // Показываем ошибку только если всё ещё на той же встрече
       if (meeting?.id === currentMeetingId) {
         error = err.message;
         dispatch('toast', { type: 'error', message: error });
       }
     } finally {
-      // Сбрасываем флаг сбора только если это наш сбор
       _apiLoading = false;
       if (collectingMeetingId === currentMeetingId) {
         collectingMeetingId = null;
@@ -191,9 +220,9 @@
           <button class="btn-secondary" on:click={() => dispatch('postMeeting', meeting)}>
             📊 Итоги встречи
           </button>
-        {:else}
-          <button class="btn-primary" on:click={() => dispatch('startMeeting', meeting)}>
-            🎙️ Начать встречу
+        {:else if displayCard}
+          <button class="btn-primary" on:click={() => dispatch('prepMeeting', meeting)}>
+            📋 Подготовка к встрече
           </button>
         {/if}
       </div>
@@ -205,11 +234,27 @@
         <div class="loading-state">
           <div class="spinner"></div>
           <p>Prep Agent собирает карточку…</p>
-          <div class="tool-steps">
-            <div style="animation-delay:0s">⚙️ CRM → клиент, сделки, контакты</div>
-            <div style="animation-delay:0.3s">⚙️ OpenSearch → рейтинг, заметки</div>
-            <div style="animation-delay:0.6s">⚙️ WebSearch → новости, вакансии</div>
-            {#if useAgent}<div style="animation-delay:0.9s">🤖 LLM → анализ болей и рекомендаций</div>{/if}
+          <div class="step-grid">
+            {#each STEPS as s}
+              {@const st = stepStates[s.id]}
+              <div class="step-chip" class:step-running={st?.status === 'running'} class:step-done={st?.status === 'done'}>
+                <span class="step-icon">{st?.status === 'done' ? '✅' : st?.status === 'running' ? '⏳' : s.icon}</span>
+                <div class="step-info">
+                  <span class="step-label">{s.label}</span>
+                  {#if st?.detail}<span class="step-detail">{st.detail}</span>{/if}
+                </div>
+              </div>
+            {/each}
+            {#if useAgent}
+              {@const llmSt = stepStates['llm']}
+              <div class="step-chip" class:step-running={llmSt?.status === 'running'} class:step-done={llmSt?.status === 'done'}>
+                <span class="step-icon">{llmSt?.status === 'done' ? '✅' : llmSt?.status === 'running' ? '⏳' : '🤖'}</span>
+                <div class="step-info">
+                  <span class="step-label">LLM-анализ</span>
+                  {#if llmSt?.detail}<span class="step-detail">{llmSt.detail}</span>{/if}
+                </div>
+              </div>
+            {/if}
           </div>
         </div>
 
@@ -330,7 +375,7 @@
                   <div class="news-item">
                     <span class="news-src">{n.source || 'Web'}</span>
                     <span class="news-text">{n.title}{n.body ? ` — ${n.body.slice(0, 100)}…` : ''}</span>
-                    <span class="news-date">{n.date || ''}</span>
+                    <span class="news-date">{formatNewsDate(n.date)}</span>
                     {#if n.href}<a class="news-link" href={n.href} target="_blank" rel="noopener">↗</a>{/if}
                   </div>
                 {/each}
@@ -376,6 +421,7 @@
               <div class="analysis">{@html mdToHtml(displayAnalysis)}</div>
             </section>
           {/if}
+
         </div>
       {/if}
     </div>
@@ -453,8 +499,20 @@
     animation: spin 0.9s linear infinite;
   }
   .loading-state p { font-size: 14px; color: #6b7db3; }
-  .tool-steps { display: flex; flex-direction: column; gap: 6px; }
-  .tool-steps div { font-size: 12px; color: #4b5a7a; animation: fadeIn 0.3s ease both; }
+  .step-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; max-width: 420px; }
+  .step-chip {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: #1e2535; border: 1px solid #252e42; border-radius: 10px;
+    transition: all 0.3s; animation: fadeIn 0.3s ease both;
+  }
+  .step-chip.step-running { border-color: rgba(59,130,246,0.4); background: rgba(59,130,246,0.08); }
+  .step-chip.step-done { border-color: rgba(16,185,129,0.3); background: rgba(16,185,129,0.06); }
+  .step-icon { font-size: 16px; flex-shrink: 0; }
+  .step-info { display: flex; flex-direction: column; min-width: 0; }
+  .step-label { font-size: 11px; font-weight: 600; color: #8896b3; }
+  .step-chip.step-running .step-label { color: #60a5fa; }
+  .step-chip.step-done .step-label { color: #10b981; }
+  .step-detail { font-size: 10px; color: #4b5a7a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* Error */
   .error-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 64px 0; }

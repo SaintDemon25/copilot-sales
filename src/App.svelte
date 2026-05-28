@@ -17,6 +17,7 @@
   let isRecording = false
   let toasts = []
   let toastId = 0
+  let activePlan = null
 
   // ─── Per-client card storage ─────────────────────────────────────────────
   // Ключ = companyName, значение = { card, analysis, hasLLM }
@@ -64,9 +65,27 @@
     }
   }
 
-  function handleStartMeeting(e) {
+  function handlePrepMeeting(e) {
     activeMeeting = e.detail
+    activeView = 'prep'
+  }
+
+  function handleStartMeeting(e) {
+    if (e.detail?.plan) {
+      activePlan = e.detail.plan
+      activeMeeting = e.detail.meeting
+    } else {
+      activeMeeting = e.detail
+    }
     activeView = 'live'
+  }
+
+  function handlePlanReady(e) {
+    activePlan = e.detail?.plan || null
+  }
+
+  function handlePrepBack() {
+    activeView = 'today'
   }
 
   function handleEndMeeting(e) {
@@ -132,6 +151,7 @@
               {savedCompanies}
               {cardsMap}
               on:select={handleMeetingSelect}
+              on:prepMeeting={handlePrepMeeting}
               on:startMeeting={handleStartMeeting}
               on:postMeeting={handlePostMeeting}
               on:cardCollected={handleCardCollected}
@@ -140,6 +160,7 @@
           {:else if activeView === 'live'}
             <LiveAdvisor
               meeting={activeMeeting}
+              meetingPlan={activePlan}
               on:endMeeting={handleEndMeeting}
               on:recordingChange={handleRecordingChange}
               on:toast={handleToast}
@@ -153,7 +174,14 @@
               on:toast={handleToast}
             />
           {:else if activeView === 'prep'}
-            <MeetingPrep on:toast={handleToast} />
+            <MeetingPrep
+              meeting={activeMeeting}
+              cardData={currentCardData?.card}
+              on:startMeeting={handleStartMeeting}
+              on:planReady={handlePlanReady}
+              on:back={handlePrepBack}
+              on:toast={handleToast}
+            />
           {/if}
         </div>
       {/key}

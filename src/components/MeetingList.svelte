@@ -179,7 +179,7 @@
     {/if}
 
     <div class="meeting-list">
-      {#if meetings.length === 0 && !caldavLoading}
+      {#if meetings.length === 0 && !sourceLoading}
         <div class="empty-state">
           {#if dataSource === 'caldav'}
             Нет событий в календаре на сегодня
@@ -246,6 +246,7 @@
         existingCard={currentCardData?.card}
         existingAnalysis={currentCardData?.analysis}
         existingHasLLM={currentCardData?.hasLLM}
+        on:prepMeeting={(e) => dispatch('prepMeeting', e.detail)}
         on:startMeeting={(e) => dispatch('startMeeting', e.detail)}
         on:postMeeting={(e) => dispatch('postMeeting', e.detail)}
         on:cardCollected={(e) => dispatch('cardCollected', e.detail)}
