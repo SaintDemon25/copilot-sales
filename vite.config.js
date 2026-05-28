@@ -24,6 +24,11 @@ export default defineConfig(({ mode }) => {
       changeOrigin: true,
       secure: false,
     },
+    '/agent-api': {
+      target: 'http://localhost:8900',
+      changeOrigin: true,
+      rewrite: (path) => path.replace(/^\/agent-api/, ''),
+    },
   }
 
   if (caldavUrl) {

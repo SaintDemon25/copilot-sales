@@ -4,6 +4,76 @@ const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
 
+// ═══ Sales Agent API — автозапуск Python ═══
+const SALES_AGENT_PORT = 8900;
+const SALES_AGENT_DIR = 'C:/Users/aasergeeva/Desktop/sales-agent';
+const PYTHON_CMD = 'C:/Users/aasergeeva/Desktop/sales-agent/venv/Scripts/python.exe';
+let salesAgentProcess = null;
+
+function checkSalesAgentHealth() {
+  return new Promise((resolve) => {
+    const req = http.get(
+      `http://localhost:${SALES_AGENT_PORT}/health`,
+      { timeout: 3000 },
+      (res) => { resolve(res.statusCode === 200); }
+    );
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+async function waitForSalesAgent(maxRetries = 20, interval = 1000) {
+  for (let i = 0; i < maxRetries; i++) {
+    if (await checkSalesAgentHealth()) return true;
+    await new Promise(r => setTimeout(r, interval));
+  }
+  return false;
+}
+
+function startSalesAgent() {
+  return new Promise(async (resolve) => {
+    // Если API уже запущен — ничего не делаем
+    if (await checkSalesAgentHealth()) {
+      console.log('[SalesAgent] ✅ API уже запущен');
+      resolve(true);
+      return;
+    }
+    const scriptPath = path.join(SALES_AGENT_DIR, 'api_server.py');
+    if (!fs.existsSync(scriptPath)) {
+      console.warn('[SalesAgent] ⚠️ Не найден', scriptPath);
+      resolve(false);
+      return;
+    }
+    console.log('[SalesAgent] 🚀 Запуск Python API...');
+    salesAgentProcess = spawn(PYTHON_CMD, [scriptPath, '--no-reload'], {
+      cwd: SALES_AGENT_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, SALES_AGENT_PORT: String(SALES_AGENT_PORT),
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONUTF8: '1',},
+
+    });
+    salesAgentProcess.stdout.on('data', (d) => console.log('[SalesAgent]', d.toString().trim()));
+    salesAgentProcess.stderr.on('data', (d) => console.error('[SalesAgent]', d.toString().trim()));
+    salesAgentProcess.on('close', (code) => { console.log(`[SalesAgent] Завершён (${code})`); salesAgentProcess = null; });
+    salesAgentProcess.on('error', (err) => { console.error('[SalesAgent] ❌', err.message); resolve(false); });
+    await new Promise(r => setTimeout(r, 2000));
+    resolve(salesAgentProcess && !salesAgentProcess.killed);
+  });
+}
+
+function stopSalesAgent() {
+  if (!salesAgentProcess) return;
+  console.log('[SalesAgent] 🛑 Остановка...');
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/PID', String(salesAgentProcess.pid), '/T', '/F'], { stdio: 'ignore' });
+  } else {
+    salesAgentProcess.kill('SIGTERM');
+    setTimeout(() => { if (salesAgentProcess) salesAgentProcess.kill('SIGKILL'); }, 3000);
+  }
+  salesAgentProcess = null;
+}
+
 // Initialize loopback audio (legacy, kept as fallback)
 try {
   const { initMain } = require('electron-audio-loopback/dist/main')
@@ -314,6 +384,12 @@ ipcMain.handle('stop-mic', async () => {
 // ---------------------------------------------------------------------------
 
 app.whenReady().then(async () => {
+  // 🚀 Автозапуск Python API
+  const started = await startSalesAgent();
+  if (started) {
+    const ready = await waitForSalesAgent(20, 1000);
+    console.log(ready ? '[SalesAgent] ✅ API готов' : '[SalesAgent] ⚠️ API не отвечает');
+  }
   createWindow()
   const viteDevUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173'
   if (process.argv.includes('--vite') || process.env.ELECTRON_DEV === '1') {
