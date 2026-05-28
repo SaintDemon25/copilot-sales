@@ -5,6 +5,10 @@
 
   const dispatch = createEventDispatcher()
   export let activeMeeting
+  /** Set компаний, у которых уже есть сохранённые карточки */
+  export let savedCompanies = new Set()
+  /** Map карточек: ключ = companyName, значение = { card, analysis, hasLLM } */
+  export let cardsMap = {}
 
   const MOCK_MEETINGS = [
     {
@@ -13,7 +17,7 @@
       duration: '60 мин',
       client: 'ООО «РусТехСнаб»',
       contact: 'Дмитрий Орлов, Директор по закупкам',
-      inn: '7701234567',
+      inn: '5261103923',
       topic: 'Презентация нового логистического модуля',
       status: 'done',
       prepStatus: 'ready',
@@ -25,7 +29,7 @@
       duration: '45 мин',
       client: 'АО «СибирьЭнерго»',
       contact: 'Марина Белова, CFO',
-      inn: '5403987654',
+      inn: '422311710025',
       topic: 'Пересмотр условий контракта Q3',
       status: 'upcoming',
       prepStatus: 'ready',
@@ -37,7 +41,7 @@
       duration: '30 мин',
       client: 'ГУП «МосТрансАвто»',
       contact: 'Игорь Петров, Зам. директора',
-      inn: '7700001122',
+      inn: '780627910094',
       topic: 'Первичная квалификация, демо продукта',
       status: 'upcoming',
       prepStatus: 'loading',
@@ -47,9 +51,9 @@
       id: 4,
       time: '15:00',
       duration: '60 мин',
-      client: 'ПАО «АгроИнвест»',
+      client: 'ООО «АгроИнвест»',
       contact: 'Светлана Кузьмина, ИТ-директор',
-      inn: '6325067890',
+      inn: '672904772982',
       topic: 'Техническое согласование интеграции ERP',
       status: 'upcoming',
       prepStatus: 'pending',
@@ -95,6 +99,9 @@
 
   let selectedMeeting = activeMeeting ?? meetings[1]
   $: dispatch('select', selectedMeeting)
+
+  // Получить карточку текущего клиента из cardsMap
+  $: currentCardData = selectedMeeting ? cardsMap[selectedMeeting.client] : undefined
 
   const statusLabels = { done: 'Завершена', upcoming: 'Предстоит', live: 'В эфире' }
   const prepLabels   = { ready: 'Готово', loading: 'Загружается…', pending: 'Ожидает' }
@@ -150,6 +157,7 @@
         </div>
       {/if}
       {#each meetings as m}
+        {@const hasCard = savedCompanies.has(m.client)}
         <button
           class="meeting-card"
           class:selected={selectedMeeting?.id === m.id}
@@ -169,6 +177,11 @@
               <span class="status-badge" class:done={m.status === 'done'}>
                 {statusLabels[m.status]}
               </span>
+              {#if hasCard}
+                <span class="card-badge ready">✓ Карточка</span>
+              {:else}
+                <span class="card-badge pending">Ожидание</span>
+              {/if}
               {#each m.tags as tag}
                 <span class="tag">{tag}</span>
               {/each}
@@ -177,11 +190,15 @@
 
           <div class="prep-col">
             <div class="prep-label">Prep Agent</div>
-            <div class="prep-status" style="color:{prepColors[m.prepStatus]}">
-              {#if m.prepStatus === 'loading'}
+            <div class="prep-status" style="color:{hasCard ? '#10b981' : prepColors[m.prepStatus]}">
+              {#if hasCard}
+                Готово
+              {:else if m.prepStatus === 'loading'}
                 <span class="spinner"></span>
+                {prepLabels[m.prepStatus]}
+              {:else}
+                {prepLabels[m.prepStatus] || prepLabels.pending}
               {/if}
-              {prepLabels[m.prepStatus]}
             </div>
           </div>
         </button>
@@ -194,8 +211,13 @@
     {#if selectedMeeting}
       <ClientDossier
         meeting={selectedMeeting}
+        existingCard={currentCardData?.card}
+        existingAnalysis={currentCardData?.analysis}
+        existingHasLLM={currentCardData?.hasLLM}
         on:startMeeting={(e) => dispatch('startMeeting', e.detail)}
         on:postMeeting={(e) => dispatch('postMeeting', e.detail)}
+        on:cardCollected={(e) => dispatch('cardCollected', e.detail)}
+        on:toast={(e) => dispatch('toast', e.detail)}
       />
     {/if}
   </div>
@@ -408,6 +430,23 @@
     border-color: #252e42;
   }
 
+  .card-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+  .card-badge.ready {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+  .card-badge.pending {
+    background: rgba(245, 158, 11, 0.1);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+  }
+
   .tag {
     font-size: 10px;
     padding: 2px 7px;
@@ -453,3 +492,4 @@
     min-width: 0;
   }
 </style>
+
