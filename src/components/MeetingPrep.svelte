@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
-  import { getMeetingPlan } from '../lib/agentApi.js';
+  import { getMeetingPlan, getAgentInfo } from '../lib/agentApi.js';
 
   export let meeting = null;
   export let cardData = null;
@@ -10,6 +10,11 @@
   let meetingPlan = null;
   let planLoading = false;
   let planError = null;
+  let planSource = '';   // 'llm' | 'template'
+
+  // Активная LLM агента (для ненавязчивого индикатора)
+  let agentLlm = null;
+  onMount(() => { getAgentInfo().then(i => { agentLlm = i?.llm || null; }).catch(() => {}); });
 
   $: if (meeting && cardData && !meetingPlan && !planLoading) {
     generatePlan();
@@ -23,6 +28,7 @@
       const result = await getMeetingPlan(meeting.client, meeting.topic, contact, cardData);
       if (result.success && result.plan) {
         meetingPlan = result.plan;
+        planSource = result.source || '';
         dispatch('planReady', { companyName: meeting.client, plan: meetingPlan });
       } else {
         throw new Error(result.error || 'Не удалось сгенерировать план');
@@ -67,7 +73,14 @@
         <div class="avatar">{initials}</div>
         <div class="header-info">
           <div class="client-name">{meeting.client}</div>
-          <div class="client-meta">{meeting.topic || 'Встреча'}{meeting.contact ? ` · ${meeting.contact}` : ''}</div>
+          <div class="client-meta">
+            {meeting.topic || 'Встреча'}{meeting.contact ? ` · ${meeting.contact}` : ''}
+            {#if planSource === 'template'}
+              <span class="model-tag" title="План сгенерирован шаблоном (LLM недоступна)">📋 шаблон · без LLM</span>
+            {:else if agentLlm?.enabled && agentLlm.model}
+              <span class="model-tag" title="Модель генерации плана">🧠 {agentLlm.model}</span>
+            {/if}
+          </div>
         </div>
       </div>
       <div class="header-right">
@@ -230,6 +243,10 @@
   }
   .client-name { font-size: 15px; font-weight: 600; color: #e8eaed; }
   .client-meta { font-size: 12px; color: #4b5a7a; margin-top: 1px; }
+  .model-tag {
+    font-size: 10px; color: #4b5a7a; padding: 1px 7px; border-radius: 6px; margin-left: 6px;
+    background: #161c2a; border: 1px solid #1e2535; white-space: nowrap;
+  }
 
   .refresh-btn {
     padding: 8px 14px; border-radius: 8px; border: 1px solid #252e42;

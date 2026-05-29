@@ -291,13 +291,37 @@ export async function exportTranscript(transcript, format = 'docx') {
 // ---------------------------------------------------------------------------
 
 /**
+ * Fetch the currently active models (ASR + Live Advisor LLM) for display.
+ * Best-effort: returns null on failure so the UI just hides the indicator.
+ * @returns {Promise<{asr: {model: string, label: string, fallback: string|null}|null, advisor: {provider: string, model: string}|null}|null>}
+ */
+export async function getLiveHintsInfo() {
+  try {
+    const res = await fetch(`${BASE_URL}/api/live-hints/info`)
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+/**
  * Connect to the DialogScribe Live Hints WebSocket.
  *
  * @param {{ onTranscript: (msg: object) => void, onHint: (msg: object) => void, onStatus: (msg: object) => void, onError: (msg: object) => void }} handlers
  * @returns {Promise<{ ws: WebSocket, sendAudio: (base64: string, source: string) => void, sendConfig: (templateKey: string, contextText?: string) => void, close: () => void }>}
  */
 export async function connectLiveHints({ onTranscript, onHint, onStatus, onError }) {
+  // Access tokens expire after 15 min. Unlike HTTP calls, the WS can't do a
+  // 401-retry mid-stream — a stale cached token would be rejected with
+  // "Не авторизован". Force a fresh token before every (re)connect.
+  _token = ''
   await ensureToken()
+  if (!_token) {
+    const msg = 'Не удалось авторизоваться в DialogScribe'
+    onError?.({ code: 'auth', message: msg })
+    throw new Error(msg)
+  }
 
   const wsUrl = BASE_URL
     ? BASE_URL.replace(/^http/, 'ws') + '/api/live-hints/ws?token=' + encodeURIComponent(_token)

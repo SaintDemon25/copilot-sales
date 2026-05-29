@@ -1,7 +1,11 @@
 <script>
-  import { createEventDispatcher } from 'svelte';
-  import { collectCard, collectCardDirect, collectCardStream } from '../lib/agentApi.js';
+  import { createEventDispatcher, onMount } from 'svelte';
+  import { collectCard, collectCardDirect, collectCardStream, getAgentInfo } from '../lib/agentApi.js';
   import ProductCard from './ProductCard.svelte';
+
+  // Активная LLM агента (для ненавязчивого индикатора)
+  let agentLlm = null;
+  onMount(() => { getAgentInfo().then(i => { agentLlm = i?.llm || null; }).catch(() => {}); });
 
   export let meeting = null;
   /** Карточка из cardsMap (передаётся от App.svelte) */
@@ -202,6 +206,9 @@
           <input type="checkbox" bind:checked={useAgent} />
           <span>{useAgent ? '🤖 Агент' : '⚡ Прямой'}</span>
         </label>
+        {#if useAgent && agentLlm?.enabled && agentLlm.model}
+          <span class="model-tag" title="Модель LLM-анализа">🧠 {agentLlm.model}</span>
+        {/if}
         <button
           class="collect-btn"
           on:click={handleCollect}
@@ -547,6 +554,10 @@
     display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; color: #6b7db3;
   }
   .mode-toggle input { accent-color: #3b82f6; }
+  .model-tag {
+    font-size: 10px; color: #4b5a7a; padding: 2px 7px; border-radius: 6px;
+    background: #161c2a; border: 1px solid #1e2535; white-space: nowrap;
+  }
   .collect-btn {
     padding: 8px 16px; border-radius: 8px; border: none; font-size: 13px;
     font-weight: 600; cursor: pointer; background: linear-gradient(135deg, #3b82f6, #6366f1);

@@ -37,6 +37,21 @@ export async function checkHealth() {
   }
 }
 
+/**
+ * Активная LLM агента (анализ карточки + план встречи) — для UI-индикатора.
+ * Best-effort: null при ошибке, чтобы индикатор просто скрылся.
+ * @returns {Promise<{llm: {enabled: boolean, provider: string|null, model: string|null}}|null>}
+ */
+export async function getAgentInfo() {
+  try {
+    const res = await fetch(`${API_BASE}/api/agent/info`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
 // ─── Meetings ────────────────────────────────────────────────────────────────
 
 /** Встречи на сегодня */

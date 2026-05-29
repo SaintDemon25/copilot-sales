@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy, tick } from 'svelte'
-  import { connectLiveHints, createMicRecorder, createSystemAudioRecorder } from '../lib/api.js'
+  import { connectLiveHints, createMicRecorder, createSystemAudioRecorder, getLiveHintsInfo } from '../lib/api.js'
 
   const dispatch = createEventDispatcher()
   export let meeting
@@ -25,6 +25,9 @@
   // ---- Live connection ----
   let liveConnection = null
   let stopped = false
+
+  // ---- Active models (shown unobtrusively) ----
+  let modelInfo = null
 
   // ---- Confirmation modal ----
   let showEndConfirm = false
@@ -264,6 +267,7 @@
       if (!isPaused && isRecording) elapsed++
     }, 1000)
     freshnessTicker = setInterval(() => { now = Date.now() }, 5000)
+    getLiveHintsInfo().then(i => { modelInfo = i }).catch(() => {})
     if (meeting) {
       startLiveSession()
     }
@@ -520,6 +524,12 @@
           {wsConnected ? '🟢 Подключен' : wsConnecting ? '🟡 Подключение' : '🔴 Офлайн'}
         </span>
       </div>
+      {#if modelInfo && (modelInfo.asr || modelInfo.advisor)}
+        <div class="cascade-models" title="Активные модели">
+          {#if modelInfo.asr}<span>🎙 {modelInfo.asr.label}</span>{/if}
+          {#if modelInfo.advisor}<span>🧠 {modelInfo.advisor.provider}{modelInfo.advisor.model ? ` · ${modelInfo.advisor.model}` : ''}</span>{/if}
+        </div>
+      {/if}
     </div>
   </div>
 </div>
@@ -945,6 +955,11 @@
   .cascade-label { color: #4b5a7a }
   .cascade-status { color: #2d3a56; font-weight: 500; transition: color 0.3s }
   .cascade-status.active { color: #10b981 }
+  .cascade-models {
+    display: flex; flex-wrap: wrap; gap: 4px 12px;
+    margin-top: 4px; padding-top: 8px; border-top: 1px dashed #1a2030;
+    font-size: 10px; color: #3d4a66;
+  }
 
   /* Confirmation modal */
   .modal-overlay {
