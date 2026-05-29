@@ -1,11 +1,15 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte'
-  import { transcribeFile, getSummary } from '../lib/api.js'
+  import { transcribeFile, getSummary, getLiveHintsInfo } from '../lib/api.js'
 
   const dispatch = createEventDispatcher()
   export let meeting
   export let liveTranscript = ''
   export let liveDuration = 0
+
+  // Активные модели (ненавязчивый индикатор): ASR для транскрибации + LLM для саммари
+  let modelInfo = null
+  onMount(() => { getLiveHintsInfo().then(i => { modelInfo = i }).catch(() => {}) })
 
   let phase = 'idle'
   let errorMsg = ''
@@ -276,6 +280,12 @@
     <div class="post-title">
       <div class="post-heading">Итоги встречи</div>
       <div class="post-sub">{meeting?.client ?? '—'} · {meeting?.contact ?? ''}</div>
+      {#if modelInfo && (modelInfo.asr || modelInfo.analysis)}
+        <div class="model-tags" title="Активные модели">
+          {#if modelInfo.asr}<span class="model-tag">🎙 {modelInfo.asr.label}</span>{/if}
+          {#if modelInfo.analysis}<span class="model-tag">🧠 {modelInfo.analysis.provider}{modelInfo.analysis.model ? ` · ${modelInfo.analysis.model}` : ''}</span>{/if}
+        </div>
+      {/if}
     </div>
     {#if hasLiveTranscript && liveDuration > 0}
       <div class="duration-badge">{fmtDuration(liveDuration)}</div>
@@ -496,6 +506,11 @@
   .post-title { flex: 1 }
   .post-heading { font-size: 18px; font-weight: 600; color: #e8eaed }
   .post-sub { font-size: 13px; color: #4b5a7a; margin-top: 2px }
+  .model-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px }
+  .model-tag {
+    font-size: 10px; color: #4b5a7a; padding: 2px 7px; border-radius: 6px;
+    background: #161c2a; border: 1px solid #1e2535; white-space: nowrap;
+  }
   .duration-badge {
     font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums;
     color: #10b981; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.25);
