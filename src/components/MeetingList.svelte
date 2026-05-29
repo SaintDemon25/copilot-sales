@@ -1,13 +1,12 @@
 <script>
-  import { createEventDispatcher } from 'svelte'
+  import { createEventDispatcher, onMount } from 'svelte'
   import ClientDossier from './ClientDossier.svelte'
   import { fetchTodayMeetings, isCalDavConfigured } from '../lib/caldav.js'
+  import { getMeetingsToday, checkHealth } from '../lib/agentApi.js'
 
   const dispatch = createEventDispatcher()
   export let activeMeeting
-  /** Set компаний, у которых уже есть сохранённые карточки */
   export let savedCompanies = new Set()
-  /** Map карточек: ключ = companyName, значение = { card, analysis, hasLLM } */
   export let cardsMap = {}
 
   const MOCK_MEETINGS = [
@@ -62,42 +61,70 @@
   ]
 
   // ---- Data source toggle ----
-  let dataSource = 'mock'  // 'mock' | 'caldav'
+  let dataSource = 'mock'  // 'mock' | 'api' | 'caldav'
   let meetings = MOCK_MEETINGS
-  let caldavLoading = false
-  let caldavError = ''
+  let sourceLoading = false
+  let sourceError = ''
   let caldavConfigured = isCalDavConfigured()
+  let apiAvailable = false
 
-  async function loadCalDavMeetings() {
-    caldavLoading = true
-    caldavError = ''
+  onMount(async () => {
+    apiAvailable = await checkHealth()
+    if (apiAvailable) {
+      switchSource('api')
+    }
+  })
+
+  async function loadApiMeetings() {
+    sourceLoading = true
+    sourceError = ''
     try {
-      meetings = await fetchTodayMeetings()
+      meetings = await getMeetingsToday()
       if (meetings.length === 0) {
-        caldavError = 'Нет событий на сегодня'
+        sourceError = 'Нет встреч на сегодня'
       }
       selectedMeeting = meetings[0] || null
     } catch (e) {
-      caldavError = e.message || 'Ошибка CalDAV'
+      sourceError = e.message || 'Ошибка API'
+      meetings = MOCK_MEETINGS
+      selectedMeeting = meetings[0] || null
+    } finally {
+      sourceLoading = false
+    }
+  }
+
+  async function loadCalDavMeetings() {
+    sourceLoading = true
+    sourceError = ''
+    try {
+      meetings = await fetchTodayMeetings()
+      if (meetings.length === 0) {
+        sourceError = 'Нет событий на сегодня'
+      }
+      selectedMeeting = meetings[0] || null
+    } catch (e) {
+      sourceError = e.message || 'Ошибка CalDAV'
       meetings = []
       selectedMeeting = null
     } finally {
-      caldavLoading = false
+      sourceLoading = false
     }
   }
 
   function switchSource(source) {
     dataSource = source
-    caldavError = ''
+    sourceError = ''
     if (source === 'mock') {
       meetings = MOCK_MEETINGS
-      selectedMeeting = activeMeeting ?? meetings[1]
+      selectedMeeting = activeMeeting ?? meetings[0]
+    } else if (source === 'api') {
+      loadApiMeetings()
     } else {
       loadCalDavMeetings()
     }
   }
 
-  let selectedMeeting = activeMeeting ?? meetings[1]
+  let selectedMeeting = activeMeeting ?? meetings[0]
   $: dispatch('select', selectedMeeting)
 
   // Получить карточку текущего клиента из cardsMap
@@ -122,6 +149,13 @@
           >Mock</button>
           <button
             class="toggle-btn"
+            class:active={dataSource === 'api'}
+            disabled={!apiAvailable}
+            title={apiAvailable ? 'Sales Agent API' : 'Sales Agent API недоступен'}
+            on:click={() => switchSource('api')}
+          >API</button>
+          <button
+            class="toggle-btn"
             class:active={dataSource === 'caldav'}
             disabled={!caldavConfigured}
             title={caldavConfigured ? 'CalDAV' : 'Заполните VITE_CALDAV_* в .env'}
@@ -132,22 +166,20 @@
       <span class="date">{new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
     </div>
 
-    {#if caldavLoading}
-      <div class="caldav-status loading">
-        <span class="spinner"></span> Загрузка CalDAV...
+    {#if sourceLoading}
+      <div class="source-status loading">
+        <span class="spinner"></span> Загрузка {dataSource === 'api' ? 'из API' : 'CalDAV'}...
       </div>
     {/if}
-    {#if caldavError}
-      <div class="caldav-status error">
-        {caldavError}
-        {#if dataSource === 'caldav'}
-          <button class="retry-link" on:click={loadCalDavMeetings}>Повторить</button>
-        {/if}
+    {#if sourceError}
+      <div class="source-status error">
+        {sourceError}
+        <button class="retry-link" on:click={() => switchSource(dataSource)}>Повторить</button>
       </div>
     {/if}
 
     <div class="meeting-list">
-      {#if meetings.length === 0 && !caldavLoading}
+      {#if meetings.length === 0 && !sourceLoading}
         <div class="empty-state">
           {#if dataSource === 'caldav'}
             Нет событий в календаре на сегодня
@@ -214,6 +246,7 @@
         existingCard={currentCardData?.card}
         existingAnalysis={currentCardData?.analysis}
         existingHasLLM={currentCardData?.hasLLM}
+        on:prepMeeting={(e) => dispatch('prepMeeting', e.detail)}
         on:startMeeting={(e) => dispatch('startMeeting', e.detail)}
         on:postMeeting={(e) => dispatch('postMeeting', e.detail)}
         on:cardCollected={(e) => dispatch('cardCollected', e.detail)}
@@ -285,7 +318,7 @@
     cursor: not-allowed;
   }
 
-  .caldav-status {
+  .source-status {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -293,11 +326,11 @@
     border-radius: 8px;
     font-size: 12px;
   }
-  .caldav-status.loading {
+  .source-status.loading {
     background: rgba(245, 158, 11, 0.08);
     color: #f59e0b;
   }
-  .caldav-status.error {
+  .source-status.error {
     background: rgba(239, 68, 68, 0.08);
     color: #f87171;
   }

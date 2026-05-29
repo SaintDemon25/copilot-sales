@@ -5,17 +5,19 @@
   import MeetingList from './components/MeetingList.svelte'
   import LiveAdvisor from './components/LiveAdvisor.svelte'
   import PostMeeting from './components/PostMeeting.svelte'
+  import MeetingPrep from './components/MeetingPrep.svelte'
   import AgentStatusBar from './components/AgentStatusBar.svelte'
   import Toast from './components/Toast.svelte'
   import { loadCard, listSavedCards } from './lib/agentApi.js'
 
-  let activeView = 'today'   // 'today' | 'live' | 'post'
+  let activeView = 'today'   // 'today' | 'live' | 'post' | 'prep'
   let activeMeeting = null
   let liveTranscript = ''
   let liveDuration = 0
   let isRecording = false
   let toasts = []
   let toastId = 0
+  let activePlan = null
 
   // ─── Per-client card storage ─────────────────────────────────────────────
   // Ключ = companyName, значение = { card, analysis, hasLLM }
@@ -63,9 +65,27 @@
     }
   }
 
-  function handleStartMeeting(e) {
+  function handlePrepMeeting(e) {
     activeMeeting = e.detail
+    activeView = 'prep'
+  }
+
+  function handleStartMeeting(e) {
+    if (e.detail?.plan) {
+      activePlan = e.detail.plan
+      activeMeeting = e.detail.meeting
+    } else {
+      activeMeeting = e.detail
+    }
     activeView = 'live'
+  }
+
+  function handlePlanReady(e) {
+    activePlan = e.detail?.plan || null
+  }
+
+  function handlePrepBack() {
+    activeView = 'today'
   }
 
   function handleEndMeeting(e) {
@@ -131,6 +151,7 @@
               {savedCompanies}
               {cardsMap}
               on:select={handleMeetingSelect}
+              on:prepMeeting={handlePrepMeeting}
               on:startMeeting={handleStartMeeting}
               on:postMeeting={handlePostMeeting}
               on:cardCollected={handleCardCollected}
@@ -139,6 +160,7 @@
           {:else if activeView === 'live'}
             <LiveAdvisor
               meeting={activeMeeting}
+              meetingPlan={activePlan}
               on:endMeeting={handleEndMeeting}
               on:recordingChange={handleRecordingChange}
               on:toast={handleToast}
@@ -149,6 +171,15 @@
               liveTranscript={liveTranscript}
               liveDuration={liveDuration}
               on:back={handlePostMeetingBack}
+              on:toast={handleToast}
+            />
+          {:else if activeView === 'prep'}
+            <MeetingPrep
+              meeting={activeMeeting}
+              cardData={currentCardData?.card}
+              on:startMeeting={handleStartMeeting}
+              on:planReady={handlePlanReady}
+              on:back={handlePrepBack}
               on:toast={handleToast}
             />
           {/if}
