@@ -208,8 +208,8 @@
           <div class="tool-steps">
             <div style="animation-delay:0s">⚙️ CRM → клиент, сделки, контакты</div>
             <div style="animation-delay:0.3s">⚙️ OpenSearch → рейтинг, заметки</div>
-            <div style="animation-delay:0.6s">⚙️ WebSearch → новости, вакансии</div>
-            {#if useAgent}<div style="animation-delay:0.9s">🤖 LLM → анализ болей и рекомендаций</div>{/if}
+            <div style="animation-delay:0.8s">🏛️ СБАР → юр. информация</div>
+            {#if useAgent}<div style="animation-delay:1.1s">🤖 LLM → анализ болей и рекомендаций</div>{/if}
           </div>
         </div>
 
@@ -350,6 +350,88 @@
                   </div>
                 {/each}
               </div>
+            </section>
+          {/if}
+
+                    <!-- СБАР (Sber Analytics) -->
+          {#if displayCard.sbar || displayCard.sbarError}
+            {@const sbar = displayCard.sbar || {}}
+            <section class="sec">
+              <h3>🏛️ СБАР — Юридическая информация</h3>
+
+              {#if !sbar.ogrn && !sbar.fullName}
+                <div class="sbar-empty">
+                  {#if displayCard.sbarError}
+                    ⚠️ Ошибка СБАР: {displayCard.sbarError}
+                  {:else if !sbar.inn && !displayCard.inn}
+                    ℹ️ ИНН не указан — поиск в СБАР невозможен
+                  {:else}
+                    ℹ️ Компания не найдена в СБАР по ИНН {sbar.inn || displayCard.inn}
+                  {/if}
+                </div>
+              {:else}
+                <div class="sbar-header">
+                  {#if sbar.fullName}
+                    <div class="info-r"><span class="lbl">Полное название</span><span class="val">{sbar.fullName}</span></div>
+                  {/if}
+                  <div class="info-r"><span class="lbl">ИНН</span><span class="val">{sbar.inn || '—'}</span></div>
+                  <div class="info-r"><span class="lbl">ОГРН</span><span class="val">{sbar.ogrn || '—'}</span></div>
+                  {#if sbar.mainActivity}
+                    <div class="info-r full">
+                      <span class="lbl">Осн. деятельность</span>
+                      <span class="val">
+                        {#if sbar.mainActivityCode}<span class="okved-code">{sbar.mainActivityCode}</span>{/if}
+                        {sbar.mainActivity}
+                      </span>
+                    </div>
+                  {/if}
+                </div>
+
+                {#if sbar.okved?.length > 0}
+                  <div class="sbar-subsection">
+                    <div class="sbar-subtitle">📊 ОКВЭД ({sbar.okved.length})</div>
+                    <div class="okved-list">
+                      {#each sbar.okved as okv}
+                        <div class="okved-item">
+                          <span class="okved-code">{okv.code}</span>
+                          <span class="okved-name">{okv.name}</span>
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if sbar.participants?.length > 0}
+                  <div class="sbar-subsection">
+                    <div class="sbar-subtitle">👤 Учредители и руководство ({sbar.participants.length})</div>
+                    <div class="participants-list">
+                      {#each sbar.participants as p}
+                        <div class="participant-item">
+                          <div class="p-avatar">{p.name.split(' ').map(w => w[0]).join('').substring(0, 2)}</div>
+                          <div class="p-info">
+                            <div class="p-name">{p.name}</div>
+                            <div class="p-role">{p.role}</div>
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if sbar.egrul?.length > 0}
+                  <div class="sbar-subsection">
+                    <div class="sbar-subtitle">📄 Записи ЕГРЮЛ ({sbar.egrul.length})</div>
+                    <div class="egrul-list">
+                      {#each sbar.egrul as rec}
+                        <div class="egrul-item">
+                          <span class="egrul-name">{rec.name}</span>
+                          {#if rec.registerDate}<span class="egrul-date">{rec.registerDate}</span>{/if}
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              {/if}
             </section>
           {/if}
 
@@ -546,6 +628,42 @@
   .vac-item span { flex: 1; }
   .vac-link { padding: 2px 8px; border-radius: 4px; background: #252e42; color: #60a5fa; font-size: 11px; text-decoration: none; }
   .vac-link:hover { opacity: 0.8; }
+
+  /* СБАР */
+  .sbar-empty {
+    background: #1e2535; border-radius: 8px; padding: 16px;
+    font-size: 12px; color: #6b7db3; text-align: center;
+  }
+  .sbar-header {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px;
+    background: #1e2535; border-radius: 8px; padding: 16px;
+  }
+  .sbar-subsection { margin-top: 12px; }
+  .sbar-subtitle { font-size: 12px; font-weight: 600; color: #8896b3; margin-bottom: 8px; }
+  .okved-code {
+    font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
+    background: rgba(59,130,246,0.1); color: #60a5fa; font-family: monospace; margin-right: 6px;
+  }
+  .okved-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; }
+  .okved-item { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; background: #1e2535; border-radius: 6px; }
+  .okved-item .okved-code { flex-shrink: 0; }
+  .okved-name { font-size: 11px; color: #8896b3; }
+  .participants-list { display: flex; flex-direction: column; gap: 6px; }
+  .participant-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: #1e2535; border-radius: 6px; }
+  .p-avatar {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: linear-gradient(135deg, #f59e0b, #3b82f6);
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-size: 11px; font-weight: 700; flex-shrink: 0;
+  }
+  .p-info { flex: 1; }
+  .p-name { font-size: 12px; font-weight: 600; color: #e8eaed; }
+  .p-role { font-size: 11px; color: #6b7db3; }
+  .egrul-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; }
+  .egrul-item { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; background: #1e2535; border-radius: 6px; font-size: 12px; }
+  .egrul-name { flex: 1; color: #8896b3; }
+  .egrul-date { color: #4b5a7a; font-size: 11px; flex-shrink: 0; }
+
 
   /* Products */
   .prod-label { font-size: 11px; font-weight: 600; }
